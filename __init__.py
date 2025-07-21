@@ -36,4 +36,4 @@ def classFactory(iface):  # pylint: disable=invalid-name
     """
     #
     from .qgis_culvert_designer import CulvertDesignerPlugin
-    return CulvertDesignerPlugin()
+    return CulvertDesignerPlugin(iface)

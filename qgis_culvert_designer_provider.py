@@ -32,6 +32,9 @@ __revision__ = '$Format:%H$'
 
 from qgis.core import QgsProcessingProvider
 from .qgis_culvert_designer_algorithm import CulvertDesignerAlgorithm
+import os
+import inspect
+from qgis.PyQt.QtGui import QIcon
 
 
 class CulvertDesignerProvider(QgsProcessingProvider):
@@ -63,7 +66,7 @@ class CulvertDesignerProvider(QgsProcessingProvider):
         string should be a unique, short, character only string, eg "qgis" or
         "gdal". This string should not be localised.
         """
-        return 'Culvert Design'
+        return 'CulvertDesign'
 
     def name(self):
         """
@@ -72,14 +75,16 @@ class CulvertDesignerProvider(QgsProcessingProvider):
 
         This string should be short (e.g. "Lastools") and localised.
         """
-        return self.tr('Culvert Design')
+        return self.tr('CulvertDesign')
 
     def icon(self):
         """
         Should return a QIcon which is used for your provider inside
         the Processing toolbox.
         """
-        return QgsProcessingProvider.icon(self)
+        cmd_folder = os.path.split(inspect.getfile(inspect.currentframe()))[0]
+        icon = QIcon(os.path.join(os.path.join(cmd_folder, 'icon.jpg')))
+        return icon
 
     def longName(self):
         """

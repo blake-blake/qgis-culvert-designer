@@ -36,6 +36,11 @@ import inspect
 
 from qgis.core import QgsProcessingAlgorithm, QgsApplication
 from .qgis_culvert_designer_provider import CulvertDesignerProvider
+from qgis.PyQt.QtWidgets import QAction
+from qgis.PyQt.QtGui import QIcon
+
+from qgis.core import QgsProcessingAlgorithm, QgsApplication
+import processing
 
 cmd_folder = os.path.split(inspect.getfile(inspect.currentframe()))[0]
 
@@ -45,8 +50,9 @@ if cmd_folder not in sys.path:
 
 class CulvertDesignerPlugin(object):
 
-    def __init__(self):
+    def __init__(self, iface):
         self.provider = None
+        self.iface = iface
 
     def initProcessing(self):
         """Init Processing provider for QGIS >= 3.8."""
@@ -56,5 +62,18 @@ class CulvertDesignerPlugin(object):
     def initGui(self):
         self.initProcessing()
 
+        icon = os.path.join(os.path.join(cmd_folder, 'icon.jpg'))
+        self.action = QAction(
+            QIcon(icon),
+            u"Culvert Designer", self.iface.mainWindow())
+        self.action.triggered.connect(self.run)
+        self.iface.addPluginToMenu(u"Culvert Designer", self.action)
+        self.iface.addToolBarIcon(self.action)
+
     def unload(self):
         QgsApplication.processingRegistry().removeProvider(self.provider)
+        self.iface.removePluginMenu(u"Culvert Designer", self.action)
+        self.iface.removeToolBarIcon(self.action)
+
+    def run(self):
+        processing.execAlgorithmDialog("CulvertDesign:culvert_designer")

@@ -30,6 +30,10 @@ __copyright__ = '(C) 2025 by Blake Hillwood'
 
 __revision__ = '$Format:%H$'
 
+import os
+import inspect
+from qgis.PyQt.QtGui import QIcon
+
 from qgis.PyQt.QtCore import QCoreApplication
 from qgis.core import (QgsProcessing,
                        QgsFeatureSink,
@@ -130,7 +134,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         lowercase alphanumeric characters only and no spaces or other
         formatting characters.
         """
-        return 'Culvert Designer'
+        return 'culvert_designer'
 
     def displayName(self):
         """
@@ -161,3 +165,8 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
 
     def createInstance(self):
         return CulvertDesignerAlgorithm()
+
+    def icon(self):
+        cmd_folder = os.path.split(inspect.getfile(inspect.currentframe()))[0]
+        icon = QIcon(os.path.join(os.path.join(cmd_folder, 'icon.jpg')))
+        return icon
