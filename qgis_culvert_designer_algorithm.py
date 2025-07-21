@@ -35,7 +35,8 @@ from qgis.core import (QgsProcessing,
                        QgsFeatureSink,
                        QgsProcessingAlgorithm,
                        QgsProcessingParameterFeatureSource,
-                       QgsProcessingParameterFeatureSink)
+                       QgsProcessingParameterFeatureSink,
+                       QgsProcessingParameterFileDestination)
 
 
 class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
