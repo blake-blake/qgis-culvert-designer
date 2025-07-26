@@ -38,10 +38,13 @@ from qgis.PyQt.QtCore import QCoreApplication
 from qgis.core import (QgsProcessing,
                        QgsFeatureSink,
                        QgsProcessingAlgorithm,
+                       QgsProcessingMultiStepFeedback,
                        QgsProcessingParameterFeatureSource,
                        QgsProcessingParameterFeatureSink,
-                       QgsProcessingParameterFileDestination)
-
+                       QgsProcessingParameterFileDestination,
+                       QgsProcessingParameterRasterLayer,
+                       QgsProcessingParameterRasterDestination)
+import processing
 
 class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
     """
@@ -75,7 +78,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         self.addParameter(
             QgsProcessingParameterFeatureSource(
                 self.INPUT,
-                self.tr('Input layer'),
+                self.tr('Road alignment'),
                 [QgsProcessing.TypeVectorAnyGeometry]
             )
         )
@@ -86,45 +89,70 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         self.addParameter(
             QgsProcessingParameterFeatureSink(
                 self.OUTPUT,
-                self.tr('Output layer')
+                self.tr('Output vector')
             )
         )
+
+        # This is the RASTER input
+        self.addParameter(QgsProcessingParameterRasterLayer('dem', 'Data Elevation Model', defaultValue=None))
+        
+        # This is the strahler order RASTER output
+        self.addParameter(QgsProcessingParameterRasterDestination('StreamOrder', 'Stream order', createByDefault=True, defaultValue=None))
+        
+
+
+
+
+
 
     def processAlgorithm(self, parameters, context, feedback):
         """
         Here is where the processing itself takes place.
         """
 
-        # Retrieve the feature source and sink. The 'dest_id' variable is used
-        # to uniquely identify the feature sink, and must be included in the
-        # dictionary returned by the processAlgorithm function.
-        source = self.parameterAsSource(parameters, self.INPUT, context)
-        (sink, dest_id) = self.parameterAsSink(parameters, self.OUTPUT,
-                context, source.fields(), source.wkbType(), source.sourceCrs())
+         # Use a multi-step feedback, so that individual child algorithm progress reports are adjusted for the
+        # overall progress through the model
+        feedback = QgsProcessingMultiStepFeedback(3, feedback)
+        results = {}
+        outputs = {}
 
-        # Compute the number of steps to display within the progress bar and
-        # get features from source
-        total = 100.0 / source.featureCount() if source.featureCount() else 0
-        features = source.getFeatures()
+        # Convert to PCRaster Format
+        alg_params = {
+            'INPUT': parameters['dem'],
+            'INPUT2': 3,  # Scalar
+            'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+        }
+        outputs['ConvertToPcrasterFormat'] = processing.run('pcraster:converttopcrasterformat', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
 
-        for current, feature in enumerate(features):
-            # Stop the algorithm if cancel button has been clicked
-            if feedback.isCanceled():
-                break
+        feedback.setCurrentStep(1)
+        if feedback.isCanceled():
+            return {}
 
-            # Add a feature in the sink
-            sink.addFeature(feature, QgsFeatureSink.FastInsert)
+        # lddcreate
+        alg_params = {
+            'INPUT': outputs['ConvertToPcrasterFormat']['OUTPUT'],
+            'INPUT0': 0,  # No
+            'INPUT1': 0,  # Map units
+            'INPUT2': 9999999,
+            'INPUT3': 9999999,
+            'INPUT4': 9999999,
+            'INPUT5': 9999999,
+            'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+        }
+        outputs['Lddcreate'] = processing.run('pcraster:lddcreate', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
 
-            # Update the progress bar
-            feedback.setProgress(int(current * total))
+        feedback.setCurrentStep(2)
+        if feedback.isCanceled():
+            return {}
 
-        # Return the results of the algorithm. In this case our only result is
-        # the feature sink which contains the processed features, but some
-        # algorithms may return multiple feature sinks, calculated numeric
-        # statistics, etc. These should all be included in the returned
-        # dictionary, with keys matching the feature corresponding parameter
-        # or output names.
-        return {self.OUTPUT: dest_id}
+        # streamorder
+        alg_params = {
+            'INPUT': outputs['Lddcreate']['OUTPUT'],
+            'OUTPUT': parameters['StreamOrder']
+        }
+        outputs['Streamorder'] = processing.run('pcraster:streamorder', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+        results['StreamOrder'] = outputs['Streamorder']['OUTPUT']
+        return results
 
     def name(self):
         """
