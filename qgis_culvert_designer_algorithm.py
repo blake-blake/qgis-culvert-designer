@@ -33,6 +33,7 @@ __revision__ = '$Format:%H$'
 import os
 import inspect
 from qgis.PyQt.QtGui import QIcon
+from pcraster import *
 
 from qgis.PyQt.QtCore import QCoreApplication
 from qgis.core import (QgsProcessing,
@@ -129,17 +130,23 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
             return {}
 
         # lddcreate
-        alg_params = {
-            'INPUT': outputs['ConvertToPcrasterFormat']['OUTPUT'],
-            'INPUT0': 0,  # No
-            'INPUT1': 0,  # Map units
-            'INPUT2': 9999999,
-            'INPUT3': 9999999,
-            'INPUT4': 9999999,
-            'INPUT5': 9999999,
-            'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
-        }
-        outputs['Lddcreate'] = processing.run('pcraster:lddcreate', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+        # alg_params = {
+        #     'INPUT': outputs['ConvertToPcrasterFormat']['OUTPUT'],
+        #     'INPUT0': 0,  # No
+        #     'INPUT1': 0,  # Map units
+        #     'INPUT2': 9999999,
+        #     'INPUT3': 9999999,
+        #     'INPUT4': 9999999,
+        #     'INPUT5': 9999999,
+        #     # 'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT # if temporary file
+        #     'OUTPUT': '/Users/blakehillwood/Desktop/Testing/output_strahler.map'  # create a .map output saved on drive
+
+        # }
+        # outputs['Lddcreate'] = processing.run('pcraster:lddcreate', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+
+        # Use this to load an existing file during testing. Uncomment the above when done or to regenerate.
+        outputs['Lddcreate'] = {'OUTPUT': '/Users/blakehillwood/Desktop/Testing/output_strahler.map'}
+
 
         feedback.setCurrentStep(2)
         if feedback.isCanceled():
@@ -152,6 +159,25 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         }
         outputs['Streamorder'] = processing.run('pcraster:streamorder', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
         results['StreamOrder'] = outputs['Streamorder']['OUTPUT']
+
+
+        # creating multiple streamorder rasters and save
+        StrahlerOrder = readmap(outputs['Streamorder']['OUTPUT'])
+        MaxStrahlerOrder = mapmaximum(StrahlerOrder) #creates a raster of the maximum value
+        MaxStrahlerOrderTuple = cellvalue(MaxStrahlerOrder,0,0) #grab a value from a position in a Raster
+        MaxStrahlerOrderValue = MaxStrahlerOrderTuple[0] # grab first element
+
+        for order in range(1,MaxStrahlerOrderValue + 1):
+            Stream = ifthen(StrahlerOrder >= order, boolean (1))
+            aguila(Stream)
+            report(Stream, 'stream'+str(order)+'.map')
+
+        ThresholdOrder = 8 # temporary number for now - change this dynamically later
+
+        
+        
+
+
         return results
 
     def name(self):
