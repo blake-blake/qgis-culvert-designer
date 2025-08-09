@@ -32,11 +32,14 @@ __revision__ = '$Format:%H$'
 
 import os
 import inspect
+import subprocess
 from qgis.PyQt.QtGui import QIcon
+from qgis.utils import iface
 from pcraster import *
 
 from qgis.PyQt.QtCore import QCoreApplication
 from qgis.core import (QgsProcessing,
+                       QgsVectorLayer,
                        QgsFeatureSink,
                        QgsProcessingAlgorithm,
                        QgsProcessingMultiStepFeedback,
@@ -44,7 +47,8 @@ from qgis.core import (QgsProcessing,
                        QgsProcessingParameterFeatureSink,
                        QgsProcessingParameterFileDestination,
                        QgsProcessingParameterRasterLayer,
-                       QgsProcessingParameterRasterDestination)
+                       QgsProcessingParameterRasterDestination,
+                       QgsProcessingParameterNumber)
 import processing
 
 class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
@@ -74,32 +78,62 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         with some other properties.
         """
 
+        # INPUTS
+
         # We add the input vector features source. It can have any kind of
         # geometry.
         self.addParameter(
             QgsProcessingParameterFeatureSource(
-                self.INPUT,
+                'RoadAlignment',
                 self.tr('Road alignment'),
                 [QgsProcessing.TypeVectorAnyGeometry]
             )
         )
 
-        # We add a feature sink in which to store our processed features (this
-        # usually takes the form of a newly created vector layer when the
-        # algorithm is run in QGIS).
+        # # We add a feature sink in which to store our processed features (this
+        # # usually takes the form of a newly created vector layer when the
+        # # algorithm is run in QGIS).
+        # self.addParameter(
+        #     QgsProcessingParameterFeatureSink(
+        #         self.OUTPUT,
+        #         self.tr('Output vector')
+        #     )
+        # )
+
+        # This is the RASTER input
         self.addParameter(
-            QgsProcessingParameterFeatureSink(
-                self.OUTPUT,
-                self.tr('Output vector')
+            QgsProcessingParameterRasterLayer(
+                'Dem',
+                'Data Elevation Model',
+                defaultValue=None
             )
         )
 
-        # This is the RASTER input
-        self.addParameter(QgsProcessingParameterRasterLayer('dem', 'Data Elevation Model', defaultValue=None))
+        self.addParameter(
+            QgsProcessingParameterNumber(
+                'ThresholdOrder',
+                self.tr('Stream order threshold'),
+                type=QgsProcessingParameterNumber.Integer,
+                defaultValue=8,
+                minValue=1
+            )
+        )
+
+        # OUTPUTS
+
+        # # This is the strahler order RASTER output
+        # self.addParameter(QgsProcessingParameterRasterDestination('StreamOrder', 'Stream order', createByDefault=True, defaultValue=None))
         
-        # This is the strahler order RASTER output
-        self.addParameter(QgsProcessingParameterRasterDestination('StreamOrder', 'Stream order', createByDefault=True, defaultValue=None))
-        
+        self.addParameter(
+            QgsProcessingParameterFeatureSink(
+                'CntrPointsOfLine',
+                'cntr points  of line',
+                type=QgsProcessing.TypeVectorPoint,
+                createByDefault=True,
+                supportsAppend=True,
+                defaultValue=None
+            )
+        )
 
 
 
@@ -113,22 +147,26 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
 
          # Use a multi-step feedback, so that individual child algorithm progress reports are adjusted for the
         # overall progress through the model
-        feedback = QgsProcessingMultiStepFeedback(3, feedback)
+        feedback = QgsProcessingMultiStepFeedback(7, feedback)
         results = {}
         outputs = {}
 
         # Convert to PCRaster Format
         alg_params = {
-            'INPUT': parameters['dem'],
+            'INPUT': parameters['Dem'],
             'INPUT2': 3,  # Scalar
             'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
         }
         outputs['ConvertToPcrasterFormat'] = processing.run('pcraster:converttopcrasterformat', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
 
+        # setclone(outputs['ConvertToPcrasterFormat']['OUTPUT'])
+
         feedback.setCurrentStep(1)
         if feedback.isCanceled():
             return {}
 
+
+        #uncomment this later!!!!
         # lddcreate
         # alg_params = {
         #     'INPUT': outputs['ConvertToPcrasterFormat']['OUTPUT'],
@@ -155,28 +193,141 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         # streamorder
         alg_params = {
             'INPUT': outputs['Lddcreate']['OUTPUT'],
-            'OUTPUT': parameters['StreamOrder']
+            # 'OUTPUT': parameters['StreamOrder']
+            'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
         }
         outputs['Streamorder'] = processing.run('pcraster:streamorder', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
         results['StreamOrder'] = outputs['Streamorder']['OUTPUT']
 
 
         # creating multiple streamorder rasters and save
-        StrahlerOrder = readmap(outputs['Streamorder']['OUTPUT'])
+        setclone(outputs['Streamorder']['OUTPUT'])
+        cellSize = float(celllength())
+        print(f'Cell size: {cellSize}')
+
+        StrahlerOrder = readmap(outputs['Streamorder']['OUTPUT'])        
+
         MaxStrahlerOrder = mapmaximum(StrahlerOrder) #creates a raster of the maximum value
         MaxStrahlerOrderTuple = cellvalue(MaxStrahlerOrder,0,0) #grab a value from a position in a Raster
         MaxStrahlerOrderValue = MaxStrahlerOrderTuple[0] # grab first element
 
         for order in range(1,MaxStrahlerOrderValue + 1):
             Stream = ifthen(StrahlerOrder >= order, boolean (1))
-            aguila(Stream)
+            # aguila(Stream)
             report(Stream, 'stream'+str(order)+'.map')
 
-        ThresholdOrder = 8 # temporary number for now - change this dynamically later
+        feedback.setCurrentStep(3)
+        if feedback.isCanceled():
+            return {}
 
-        
-        
+        ThresholdOrder =  parameters['ThresholdOrder']
 
+        if ThresholdOrder > MaxStrahlerOrder:
+            ThresholdOrder = MaxStrahlerOrder
+            feedback.pushInfo(f'Chosen threshold was above maximum, using maximum of {MaxStrahlerOrder} instead.')
+
+        chosen_stream_path = os.path.join(os.getcwd(),'stream'+str(ThresholdOrder)+'.map')
+        # iface.addRasterLayer(os.path.join(os.getcwd(),'stream'+str(ThresholdOrder)+'.map'), 'stream ≥ '+str(ThresholdOrder))
+
+        # Polygonize (raster to vector)
+        alg_params = {
+            'BAND': 1,
+            'EIGHT_CONNECTEDNESS': False,
+            'EXTRA': None,
+            'FIELD': 'DN',
+            'INPUT': chosen_stream_path,
+            'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+        }
+        outputs['PolygonizeRasterToVector'] = processing.run('gdal:polygonize', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+
+        feedback.setCurrentStep(4)
+        if feedback.isCanceled():
+            return {}
+
+        # Intersection
+        alg_params = {
+            'GRID_SIZE': None,
+            'INPUT': parameters['RoadAlignment'],
+            'INPUT_FIELDS': [''],
+            'OVERLAY': outputs['PolygonizeRasterToVector']['OUTPUT'],
+            'OVERLAY_FIELDS': [''],
+            'OVERLAY_FIELDS_PREFIX': None,
+            'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+        }
+        outputs['Intersection'] = processing.run('native:intersection', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+
+        feedback.setCurrentStep(5)
+        if feedback.isCanceled():
+            return {}
+
+        # Centroids
+        alg_params = {
+            'ALL_PARTS': False,
+            'INPUT': outputs['Intersection']['OUTPUT'],
+            'OUTPUT': '/Users/blakehillwood/Desktop/Testing/centroids.shp'
+        }
+        outputs['Centroids'] = processing.run('native:centroids', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+        results['CntrPointsOfLine'] = outputs['Centroids']['OUTPUT']
+
+        feedback.setCurrentStep(6)
+        if feedback.isCanceled():
+            return {}
+
+
+        ## Following takes the centroids and defines the subcatchments
+
+        centroids = QgsVectorLayer(outputs['Centroids']['OUTPUT'], "centroids", "ogr")
+        centroids_filepath = '/Users/blakehillwood/Desktop/Testing/centroids.col'  ## edit: Create this path dynamically or user input later
+
+        with open(centroids_filepath, 'w') as f:
+            for feat in centroids.getFeatures():
+                geom = feat.geometry()
+                x = geom.asPoint().x()
+                y = geom.asPoint().y()
+                value = 1 # create a boolean (could be a unique ID later)
+                f.write(f"{x} {y} {value}\n")
+
+        # convert centroids csv to .map
+
+        # Column file to PCRaster Map
+        alg_params = {
+            'INPUT': centroids_filepath,
+            'INPUT1': outputs['ConvertToPcrasterFormat']['OUTPUT'],
+            'INPUT2': 0,  # Boolean
+            'OUTPUT': '/Users/blakehillwood/Desktop/Testing/col2map.map' # parameters['Col2map']
+        }
+
+        outputs['ColumnFileToPcrasterMap'] = processing.run('pcraster:col2map', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+
+
+        # Delete
+        # subprocess.run([
+        #     'col2map',
+        #     '--input', centroids_filepath,
+        #     '--output', '/Users/blakehillwood/Desktop/Testing/outlets.map',
+        #     '--clone', '/Users/blakehillwood/Desktop/Testing/output_strahler.map', #edit - make this dynamic
+        # ], check=True)
+
+
+        # Subcatchments to points
+        setclone(outputs['ConvertToPcrasterFormat']['OUTPUT'])
+        ldd = readmap(outputs['Lddcreate']['OUTPUT'])
+        outlets = readmap(outputs['ColumnFileToPcrasterMap']['OUTPUT'])
+
+        outlets_unique = ordinal(cover(uniqueid(outlets),0))
+
+        MaxNumOutlets = mapmaximum(outlets_unique) #creates a raster of the maximum value
+        MaxNumOutletsTuple = cellvalue(MaxNumOutlets,0,0) #grab a value from a position in a Raster
+        MaxNumOutletsValue = MaxNumOutletsTuple[0] # grab first element
+
+        for outlet in range(1, MaxNumOutletsValue + 1):
+            subcatchment = catchment(ldd, ifthenelse(outlets_unique == outlet,boolean(1), boolean(0)))
+            report(subcatchment, 'subcatchment'+str(outlet)+'.map')
+            aguila(subcatchment)
+
+
+
+            
 
         return results
 
