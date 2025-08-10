@@ -48,8 +48,18 @@ from qgis.core import (QgsProcessing,
                        QgsProcessingParameterFileDestination,
                        QgsProcessingParameterRasterLayer,
                        QgsProcessingParameterRasterDestination,
-                       QgsProcessingParameterNumber)
+                       QgsProcessingParameterNumber,
+                       QgsCoordinateReferenceSystem)
 import processing
+
+# import geopandas as gpd
+# import rasterio
+# from rasterio.mask import mask
+# import pandas as pd
+# from shapely.geometry import mapping
+from whitebox import WhiteboxTools
+
+
 
 class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
     """
@@ -71,6 +81,8 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
 
     OUTPUT = 'OUTPUT'
     INPUT = 'INPUT'
+
+    wbt = WhiteboxTools()
 
     def initAlgorithm(self, config):
         """
@@ -124,16 +136,16 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         # # This is the strahler order RASTER output
         # self.addParameter(QgsProcessingParameterRasterDestination('StreamOrder', 'Stream order', createByDefault=True, defaultValue=None))
         
-        self.addParameter(
-            QgsProcessingParameterFeatureSink(
-                'CntrPointsOfLine',
-                'cntr points  of line',
-                type=QgsProcessing.TypeVectorPoint,
-                createByDefault=True,
-                supportsAppend=True,
-                defaultValue=None
-            )
-        )
+        # self.addParameter(
+        #     QgsProcessingParameterFeatureSink(
+        #         'CntrPointsOfLine',
+        #         'cntr points  of line',
+        #         type=QgsProcessing.TypeVectorPoint,
+        #         createByDefault=True,
+        #         supportsAppend=True,
+        #         defaultValue=None
+        #     )
+        # )
 
 
 
@@ -264,7 +276,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         alg_params = {
             'ALL_PARTS': False,
             'INPUT': outputs['Intersection']['OUTPUT'],
-            'OUTPUT': '/Users/blakehillwood/Desktop/Testing/centroids.shp'
+            'OUTPUT': '/Users/blakehillwood/Desktop/Testing/centroids.shp' #edit - make this dynamic
         }
         outputs['Centroids'] = processing.run('native:centroids', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
         results['CntrPointsOfLine'] = outputs['Centroids']['OUTPUT']
@@ -326,10 +338,56 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
             aguila(subcatchment)
 
 
+        # Longest streampaths using whitebox
+        # input_dem_layer = self.parameterAsRasterLayer(parameters, 'Dem', context)
+        # input_dem = input_dem_layer.source()
 
-            
+
+        # Translate (convert format) - This ensures correct tif ready for whitebox
+        alg_params = {
+            'COPY_SUBDATASETS': False,
+            'DATA_TYPE': 0,  # Use Input Layer Data Type
+            'EXTRA': '',
+            'INPUT': parameters['Dem'],
+            'NODATA': -9999,
+            'OPTIONS': None,
+            'TARGET_CRS': QgsCoordinateReferenceSystem('EPSG:32760'),
+            'OUTPUT': os.path.join('/Users/blakehillwood/Desktop/Testing/Whitebox/',"cleaned_dem.tif")
+        }
+        outputs['TranslateConvertFormat'] = processing.run('gdal:translate', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+        
+
+
+        input_dem = outputs['TranslateConvertFormat']['OUTPUT']
+        output_dem = os.path.join('/Users/blakehillwood/Desktop/Testing/Whitebox/',"filled_dem.tif") # edit - make this dynamic later
+        output_flowdir = os.path.join('/Users/blakehillwood/Desktop/Testing/Whitebox/',"flow_dir.tif") # edit - make this dynamic later
+        output_flowacc = os.path.join('/Users/blakehillwood/Desktop/Testing/Whitebox/',"flow_acc.tif") # edit - make this dynamic later
+
+        self.wbt.fill_depressions(input_dem, output_dem)
+
+        self.wbt.d8_pointer(output_dem, output_flowdir)
+
+        self.wbt.d8_flow_accumulation(output_dem, output_flowacc)
+
+        pcraster_pour_points = outputs['Centroids']['OUTPUT']
+
+        self.
+
+        ## Next we take the subcatchments and perform hydrologic calculations on them
+        ## Method using RFFP 2000 method
+        ## Inputs required - coordinates, area, longest streampath.
+
+
+
+
 
         return results
+
+
+
+
+
+
 
     def name(self):
         """
