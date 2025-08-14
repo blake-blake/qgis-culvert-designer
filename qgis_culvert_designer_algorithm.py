@@ -335,7 +335,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         for outlet in range(1, MaxNumOutletsValue + 1):
             subcatchment = catchment(ldd, ifthenelse(outlets_unique == outlet,boolean(1), boolean(0)))
             report(subcatchment, 'subcatchment'+str(outlet)+'.map')
-            aguila(subcatchment)
+            # aguila(subcatchment) # visualise on screen
 
 
         # Longest streampaths using whitebox
@@ -362,6 +362,8 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         output_dem = os.path.join('/Users/blakehillwood/Desktop/Testing/Whitebox/',"filled_dem.tif") # edit - make this dynamic later
         output_flowdir = os.path.join('/Users/blakehillwood/Desktop/Testing/Whitebox/',"flow_dir.tif") # edit - make this dynamic later
         output_flowacc = os.path.join('/Users/blakehillwood/Desktop/Testing/Whitebox/',"flow_acc.tif") # edit - make this dynamic later
+        output_snapped_pour_points = os.path.join('/Users/blakehillwood/Desktop/Testing/Whitebox/',"snapped.shp")
+        output_longest_flow_path = os.path.join('/Users/blakehillwood/Desktop/Testing/Whitebox/',"snapped.shp")
 
         self.wbt.fill_depressions(input_dem, output_dem)
 
@@ -371,12 +373,53 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
 
         pcraster_pour_points = outputs['Centroids']['OUTPUT']
 
-        self.
+        self.wbt.snap_pour_points(pcraster_pour_points, output_flowacc, output_snapped_pour_points, snap_dist = 2)
+
+        #Load layer as a QGIS layer
+        snapped = QgsVectorLayer(output_snapped_pour_points, 'snapped', 'ogr')
+
+        #To create individualised watersheds and longest streams, we need to split the pour points into individual layers
+
+        # Split vector layer
+        alg_params = {
+            'FIELD': 'fid',
+            'FILE_TYPE': 1,  # shp
+            'INPUT': output_snapped_pour_points,
+            'PREFIX_FIELD': True,
+            'OUTPUT': os.path.join('/Users/blakehillwood/Desktop/Testing/Whitebox/PourPoints/',"") # folder path
+        }
+        outputs['SplitVectorLayer'] = processing.run('native:splitvectorlayer', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+        
+
+        # Create catchment polygons
+
+        for i, feat in enumerate(snapped.getFeatures()):
+            value = int(feat['fid'])
+            self.wbt.watershed(output_flowdir, os.path.join('/Users/blakehillwood/Desktop/Testing/Whitebox/PourPoints/',f"fid_{value}.shp"), os.path.join('/Users/blakehillwood/Desktop/Testing/Whitebox/Catchments/',f"catchment_{value}.tif") )
+            self.wbt.longest_flowpath( output_dem, os.path.join('/Users/blakehillwood/Desktop/Testing/Whitebox/Catchments/',f"catchment_{value}.tif"), os.path.join('/Users/blakehillwood/Desktop/Testing/Whitebox/StreamPaths/',f"longest_flowpath_{value}.shp") )
+
+            alg_params = {
+            'BAND': 1,
+            'EIGHT_CONNECTEDNESS': False,
+            'EXTRA': '',
+            'FIELD': 'DN',
+            'INPUT': os.path.join('/Users/blakehillwood/Desktop/Testing/Whitebox/Catchments/',f"catchment_{value}.tif"),
+            'OUTPUT': os.path.join('/Users/blakehillwood/Desktop/Testing/Whitebox/Catchments/',f"catchment_{value}.shp")
+            }
+            outputs[f'PolygonizeRasterToVector_{value}'] = processing.run('gdal:polygonize', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+
+            number_of_features = i
+        
+
+
+
 
         ## Next we take the subcatchments and perform hydrologic calculations on them
         ## Method using RFFP 2000 method
+        ## Culvert design uses Q10 (edit - can expand this later)
         ## Inputs required - coordinates, area, longest streampath.
 
+        
 
 
 
