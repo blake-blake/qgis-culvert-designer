@@ -49,7 +49,10 @@ from qgis.core import (QgsProcessing,
                        QgsProcessingParameterRasterLayer,
                        QgsProcessingParameterRasterDestination,
                        QgsProcessingParameterNumber,
-                       QgsCoordinateReferenceSystem)
+                       QgsCoordinateReferenceSystem,
+                       QgsGeometry,
+                       QgsCoordinateTransform,
+                       QgsProject)
 import processing
 
 # import geopandas as gpd
@@ -58,6 +61,21 @@ import processing
 # import pandas as pd
 # from shapely.geometry import mapping
 from whitebox import WhiteboxTools
+
+
+class PourPoint:
+    """
+    This is a class to contain all the information
+    related to one drainage outlet point.
+
+    """
+    def __init__(self, name):
+        self.name = name
+
+    def set_pour_point(self, pour_point_path):
+        self.pour_point_path = pour_point_path
+
+
 
 
 
@@ -380,7 +398,8 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
 
         #To create individualised watersheds and longest streams, we need to split the pour points into individual layers
 
-        # Split vector layer
+        # Split vector layer - this takes the pour points file and creates individual files for each.
+        # This is required for the watershed and longest streampath functions performed later.
         alg_params = {
             'FIELD': 'fid',
             'FILE_TYPE': 1,  # shp
@@ -398,6 +417,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
             self.wbt.watershed(output_flowdir, os.path.join('/Users/blakehillwood/Desktop/Testing/Whitebox/PourPoints/',f"fid_{value}.shp"), os.path.join('/Users/blakehillwood/Desktop/Testing/Whitebox/Catchments/',f"catchment_{value}.tif") )
             self.wbt.longest_flowpath( output_dem, os.path.join('/Users/blakehillwood/Desktop/Testing/Whitebox/Catchments/',f"catchment_{value}.tif"), os.path.join('/Users/blakehillwood/Desktop/Testing/Whitebox/StreamPaths/',f"longest_flowpath_{value}.shp") )
 
+            # Polygonize - convert the raster layer from whitebox into a vector.
             alg_params = {
             'BAND': 1,
             'EIGHT_CONNECTEDNESS': False,
@@ -408,7 +428,25 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
             }
             outputs[f'PolygonizeRasterToVector_{value}'] = processing.run('gdal:polygonize', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
 
-            number_of_features = i
+            # Remove null geometries
+            alg_params = {
+                'INPUT': os.path.join('/Users/blakehillwood/Desktop/Testing/Whitebox/Catchments/',f"catchment_{value}.shp"),
+                'REMOVE_EMPTY': True,
+                'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+            }
+            outputs['RemoveNullGeometries'] = processing.run('native:removenullgeometries', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+            
+
+            # Dissolve - use this to combine any features that might have been disjointed
+            alg_params = {
+                'FIELD': [''],
+                'INPUT': outputs['RemoveNullGeometries']['OUTPUT'],
+                'SEPARATE_DISJOINT': False,
+                'OUTPUT': os.path.join('/Users/blakehillwood/Desktop/Testing/Whitebox/Catchments/',f"catchment_{value}.shp")
+            }
+            outputs['Dissolve'] = processing.run('native:dissolve', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+        
+            number_of_features = i 
         
 
 
@@ -418,18 +456,66 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         ## Method using RFFP 2000 method
         ## Culvert design uses Q10 (edit - can expand this later)
         ## Inputs required - coordinates, area, longest streampath.
+        ## Refer Design flood estimation in Western Australia by David Flavell, 2012
 
-        
+
+
+        _id_array = [342, 643, 1077] # Edit - make loop dynamic
+        flow_rates_by_id = {}
+      
+        for _id in _id_array:
+            catchment_filepath = os.path.join('/Users/blakehillwood/Desktop/Testing/Whitebox/Catchments/',f"catchment_{_id}.shp")
+            longest_flowpath_filepath = os.path.join('/Users/blakehillwood/Desktop/Testing/Whitebox/StreamPaths/',f"longest_flowpath_{_id}.shp")
+
+            catchment_QGIS = QgsVectorLayer(catchment_filepath, "catchment", "ogr")
+            flowpath_QGIS = QgsVectorLayer(longest_flowpath_filepath, "flowpath", "ogr")
+
+            #for f in catchment_QGIS.getFeatures():
+
+            catchment_feature = next(catchment_QGIS.getFeatures(), None)
+            catchment_geometry = QgsGeometry(catchment_feature.geometry())
+            
+            area = catchment_geometry.area()/1_000_000 # convert m2 to km2
+            print(f'🗺️  Area for {_id} is {area} km2')            
+
+            centroid = catchment_geometry.centroid().asPoint()
+
+            transform_object = QgsCoordinateTransform(catchment_QGIS.sourceCrs(), QgsCoordinateReferenceSystem('EPSG:4326'), QgsProject.instance())         #this is a QgsCoordinateTransform object that has a transform method
+
+            centroid_transformed = transform_object.transform(centroid)
+
+            ## Edit - Uncomment later
+            # longitude = centroid_transformed.x()
+            # latitude = centroid_transformed.y()
+
+            ## Temporary lat/long that's in the pilbara region.
+            longitude = 119
+            latitude = 23
+
+            print(f'📍 Coordinates for {_id} is LAT: {latitude} degrees, LONG: {longitude} degrees')
+
+            flowpath_feature = next(flowpath_QGIS.getFeatures(),None)
+            flowpath_slope = flowpath_feature['AVG_SLOPE'] * 10 # convert percent grade (1/100) to m/km (1/1000)
+            flowpath_length = flowpath_feature['LENGTH']/1000 # convert m to km
+
+            print(f'🦦 Flow path length: {flowpath_length} km, Flow path slope: {flowpath_slope} m/km')
+
+            # FLAVELL 2012, RFFP 2000
+            Q_10 = (
+                    2.36e-34 * 
+                    (area * flowpath_slope**0.5)**0.81 * 
+                    latitude**-15.24 * longitude**26.28 * 
+                    (flowpath_length**2 / area)**-0.39
+                )
+
+            flow_rates_by_id[int(_id)] = Q_10
+            print(f'💧 Flowrate for {_id} is {Q_10}\n')
+
 
 
 
 
         return results
-
-
-
-
-
 
 
     def name(self):
