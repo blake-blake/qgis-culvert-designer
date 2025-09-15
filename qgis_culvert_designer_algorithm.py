@@ -76,7 +76,10 @@ class PourPoint:
         self.pour_point_path = pour_point_path
 
 
+class Culvert:
+    def __init__(self):
 
+    def
 
 
 class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
@@ -196,7 +199,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
             return {}
 
 
-        #uncomment this later!!!!
+        ## EDIT uncomment this later!!!!
         # lddcreate
         # alg_params = {
         #     'INPUT': outputs['ConvertToPcrasterFormat']['OUTPUT'],
@@ -461,7 +464,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
 
 
         _id_array = [342, 643, 1077] # Edit - make loop dynamic
-        flow_rates_by_id = {}
+        flow_rates_by_id = {} # store calculated flow rates in a dictionary
       
         for _id in _id_array:
             catchment_filepath = os.path.join('/Users/blakehillwood/Desktop/Testing/Whitebox/Catchments/',f"catchment_{_id}.shp")
@@ -512,10 +515,18 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
             print(f'💧 Flowrate for {_id} is {Q_10}\n')
 
 
+        ## Next use the flow rates to size culverts
+        ## Always designing for corrugated metal pipe as observed in industry
+        ## Assumes no overtopping and design will factor for high enough embankment
 
 
 
         return results
+
+
+
+
+
 
 
     def name(self):
