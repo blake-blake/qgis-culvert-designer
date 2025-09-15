@@ -62,24 +62,24 @@ import processing
 # from shapely.geometry import mapping
 from whitebox import WhiteboxTools
 
+# # edi later - delete this class
+# class PourPoint:
+#     """
+#     This is a class to contain all the information
+#     related to one drainage outlet point.
 
-class PourPoint:
-    """
-    This is a class to contain all the information
-    related to one drainage outlet point.
+#     """
+#     def __init__(self, name):
+#         self.name = name
 
-    """
-    def __init__(self, name):
-        self.name = name
+#     def set_pour_point(self, pour_point_path):
+#         self.pour_point_path = pour_point_path
 
-    def set_pour_point(self, pour_point_path):
-        self.pour_point_path = pour_point_path
+# # edit later - divide up functions into this culvert class
+# class Culvert:
+#     def __init__(self):
 
-
-class Culvert:
-    def __init__(self):
-
-    def
+#     def
 
 
 class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
@@ -519,6 +519,47 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         ## Always designing for corrugated metal pipe as observed in industry
         ## Assumes no overtopping and design will factor for high enough embankment
 
+        # Inlet type - straight, projecting, circular corrugated metal pipe
+
+
+        # Inlet control
+
+        for _id in _id_array:
+
+            Q = flow_rates_by_id[int(_id)]
+            D_array = {0.6,0.9,1.2,1.8,2.4} # standard culvert dia options
+
+            # For Thin Edge Projecting Inlet - Table 1, HY-8 Equation 1 (HY-8 User Manual / FHWA HDS-5)
+            a = 0.187321 
+            b = 0.56771 
+            c = -0.156544 
+            d = 0.0447052 
+            e = -0.00343602 
+            f = 8.96610e-05
+            KE = 0.9
+            SR = 0.5
+
+            Hw_max = 0
+            Chosen_D = 0.6
+
+            for D in D_array:
+                B = D # in the case of a circular culvert
+                QBD = Q/(B*D**1.5)
+
+                # HY-8 Polynomial Generation
+
+                Hw = (a + b*QBD + c*QBD**2 + d*QBD**3 + e*QBD**4 + f*QBD**5 )*D
+
+                print(f'🌊 Headwater ratio for {_id} with a {D}m dia. barrel is {Hw/D}\n')
+
+                if Hw/D < 1.5 and Hw > Hw_max: #1.5 is the upper limit of allowable Hw/D ratio
+                    Hw_max = Hw
+                    Chosen_D = D
+
+            print(f'⭕️ Chosen diameter: {Chosen_D}m with headwater ratio of {Hw_max/Chosen_D}\n')
+
+
+        #
 
 
         return results
