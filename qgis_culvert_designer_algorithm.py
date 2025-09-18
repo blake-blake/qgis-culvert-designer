@@ -33,6 +33,7 @@ __revision__ = '$Format:%H$'
 import os
 import inspect
 import subprocess
+import math
 from qgis.PyQt.QtGui import QIcon
 from qgis.utils import iface
 from pcraster import *
@@ -529,6 +530,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
             Q = flow_rates_by_id[int(_id)]
             D_array = {0.6,0.9,1.2,1.8,2.4} # standard culvert dia options
 
+            # For inlet control
             # For Thin Edge Projecting Inlet - Table 1, HY-8 Equation 1 (HY-8 User Manual / FHWA HDS-5)
             a = 0.187321 
             b = 0.56771 
@@ -539,28 +541,78 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
             KE = 0.9
             SR = 0.5
 
-            Hw_max = 0
-            Chosen_D = 0.6
+            # For outlet control
+            Ku = 29 # Constant provided by HDS-5
+            n = 0.024 # mannings n of corrugated steel pipe
+            g = 9.81 # gravity
+
+            L = 10 # (m) length of pipe -- edit - make this dynamic
+            Ls = 0.1 # (m) Drop in height from inlet to outlet -- edit -- make this dynamic based on culvert slope
+            
+
+            Hw_ratio_max = 0 
+            Chosen_D = 0
+
 
             for D in D_array:
+
+                ## ---- INLET CONTROL ---- ##
                 B = D # in the case of a circular culvert
                 QBD = Q/(B*D**1.5)
 
                 # HY-8 Polynomial Generation
 
-                Hw = (a + b*QBD + c*QBD**2 + d*QBD**3 + e*QBD**4 + f*QBD**5 )*D
+                Hw_ic = (a + b*QBD + c*QBD**2 + d*QBD**3 + e*QBD**4 + f*QBD**5 )*D
 
-                print(f'🌊 Headwater ratio for {_id} with a {D}m dia. barrel is {Hw/D}\n')
-
-                if Hw/D < 1.5 and Hw > Hw_max: #1.5 is the upper limit of allowable Hw/D ratio
-                    Hw_max = Hw
-                    Chosen_D = D
-
-            print(f'⭕️ Chosen diameter: {Chosen_D}m with headwater ratio of {Hw_max/Chosen_D}\n')
+                print(f'🌊 Inlet control headwater ratio for {_id} with a {D}m dia. barrel is {Hw_ic/D}')
 
 
-        #
 
+                ## ---- OUTLET CONTROL ---- ##
+                # Equation 3.5 and 3.6 in FHWA HDS-5
+                A = math.pi * D**2 / 4 # Area
+                P = math.pi*D # Wetted Perimeter
+                Tw = D # Tailwater - assume this to be either 0 m or equal to pipe height
+                
+                V = Q / A
+                R = A / P
+                
+                He = KE* V**2 / (2*g) # Entrance loss - Equation 3.4a
+
+                Hf = (Ku * n**2 * L / R**1.33) * V**2 / 2 / 9.81 # Friction loss - Equation 3.4b
+
+                Ho = V**2 / (2*g) # Exit loss - Equation 3.4d
+
+                Hl = He + Hf + Ho # Equation 3.1
+
+                Hw_oc = Tw + Hl - Ls # Equation 3.6b
+
+                print(f'🌊 Outlet control headwater ratio for {_id} with a {D}m dia. barrel is {Hw_oc/D}')
+
+
+                if Hw_ic > Hw_oc:
+                    print(f'Inlet controlled\n')
+                    
+                    if Hw_ic/D < 1.5 and Hw_ic/D > Hw_ratio_max: #1.5 is the upper limit of allowable Hw/D ratio
+                            Hw_ratio_max = Hw_ic/D
+                            Chosen_D = D
+
+                else:
+                    print(f'Oulet controlled\n')
+                    
+                    if Hw_oc/D < 1.5 and Hw_oc/D > Hw_ratio_max: #1.5 is the upper limit of allowable Hw/D ratio
+                        Hw_ratio_max = Hw_oc/D
+                        Chosen_D = D
+
+
+            print(f'⭕️ Chosen diameter: {Chosen_D}m with headwater ratio of {Hw_ratio_max}\n')
+
+
+        
+
+
+
+          
 
         return results
 
