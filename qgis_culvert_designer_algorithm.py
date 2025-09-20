@@ -179,7 +179,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         Here is where the processing itself takes place.
         """
 
-         # Use a multi-step feedback, so that individual child algorithm progress reports are adjusted for the
+        # Use a multi-step feedback, so that individual child algorithm progress reports are adjusted for the
         # overall progress through the model
         feedback = QgsProcessingMultiStepFeedback(7, feedback)
         results = {}
@@ -201,6 +201,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
 
 
         ## EDIT uncomment this later!!!!
+        ## Ldd create is used to calculate the flow path directions
         # lddcreate
         # alg_params = {
         #     'INPUT': outputs['ConvertToPcrasterFormat']['OUTPUT'],
@@ -216,7 +217,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         # }
         # outputs['Lddcreate'] = processing.run('pcraster:lddcreate', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
 
-        # Use this to load an existing file during testing. Uncomment the above when done or to regenerate.
+        ## Use this to load an existing file during testing. Uncomment the above when done or to regenerate.
         outputs['Lddcreate'] = {'OUTPUT': '/Users/blakehillwood/Desktop/Testing/output_strahler.map'}
 
 
@@ -237,7 +238,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         # creating multiple streamorder rasters and save
         setclone(outputs['Streamorder']['OUTPUT'])
         cellSize = float(celllength())
-        print(f'Cell size: {cellSize}')
+        print(f'Cell size check: {cellSize}')
 
         StrahlerOrder = readmap(outputs['Streamorder']['OUTPUT'])        
 
@@ -246,14 +247,15 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         MaxStrahlerOrderValue = MaxStrahlerOrderTuple[0] # grab first element
 
         for order in range(1,MaxStrahlerOrderValue + 1):
-            Stream = ifthen(StrahlerOrder >= order, boolean (1))
+            Stream = ifthen(StrahlerOrder >= order, boolean (1)) #filter out each stream order from 1 to the maximum stream order
             # aguila(Stream)
-            report(Stream, 'stream'+str(order)+'.map')
+            report(Stream, 'stream'+str(order)+'.map') # save to file #EDIT - make this save location dynamic
 
         feedback.setCurrentStep(3)
         if feedback.isCanceled():
             return {}
 
+        # User provided stream order threshold
         ThresholdOrder =  parameters['ThresholdOrder']
 
         if ThresholdOrder > MaxStrahlerOrder:
@@ -263,7 +265,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         chosen_stream_path = os.path.join(os.getcwd(),'stream'+str(ThresholdOrder)+'.map')
         # iface.addRasterLayer(os.path.join(os.getcwd(),'stream'+str(ThresholdOrder)+'.map'), 'stream ≥ '+str(ThresholdOrder))
 
-        # Polygonize (raster to vector)
+        # Polygonize (raster to vector) - convert the chosen stream path into a polygon so we can calculate intersections
         alg_params = {
             'BAND': 1,
             'EIGHT_CONNECTEDNESS': False,
@@ -274,14 +276,18 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         }
         outputs['PolygonizeRasterToVector'] = processing.run('gdal:polygonize', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
 
+        ## Add to QGIS project for visualisation ## EDIT - can remove this later...
+        QgsProject.instance().addMapLayer(QgsVectorLayer(outputs['PolygonizeRasterToVector']['OUTPUT'], "Polygonized_StreamPath", "ogr"))
+
         feedback.setCurrentStep(4)
         if feedback.isCanceled():
             return {}
 
-        # Intersection
+        # Intersection - this finds the overlap of the road string with the stream path polygon.
         alg_params = {
             'GRID_SIZE': None,
-            'INPUT': parameters['RoadAlignment'],
+            # 'INPUT': parameters['RoadAlignment'],
+            'INPUT': self.parameterAsVectorLayer(parameters, 'RoadAlignment', context),
             'INPUT_FIELDS': [''],
             'OVERLAY': outputs['PolygonizeRasterToVector']['OUTPUT'],
             'OVERLAY_FIELDS': [''],
@@ -290,11 +296,15 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         }
         outputs['Intersection'] = processing.run('native:intersection', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
 
+        ## Add to QGIS project for visualisation ## EDIT - can remove this later...
+        QgsProject.instance().addMapLayer(QgsVectorLayer(outputs['Intersection']['OUTPUT'], "Intersection_road_with_stream", "ogr"))
+
+
         feedback.setCurrentStep(5)
         if feedback.isCanceled():
             return {}
 
-        # Centroids
+        # Centroids - since the intersection creates a line type, we want to find the centroid of the line to make our pour point.
         alg_params = {
             'ALL_PARTS': False,
             'INPUT': outputs['Intersection']['OUTPUT'],
@@ -302,6 +312,10 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         }
         outputs['Centroids'] = processing.run('native:centroids', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
         results['CntrPointsOfLine'] = outputs['Centroids']['OUTPUT']
+
+        ## Add to QGIS project for visualisation ## EDIT - can remove this later...
+        QgsProject.instance().addMapLayer(QgsVectorLayer(outputs['Centroids']['OUTPUT'], "Centroids_of_intersections", "ogr"))
+
 
         feedback.setCurrentStep(6)
         if feedback.isCanceled():
@@ -332,16 +346,6 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         }
 
         outputs['ColumnFileToPcrasterMap'] = processing.run('pcraster:col2map', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
-
-
-        # Delete
-        # subprocess.run([
-        #     'col2map',
-        #     '--input', centroids_filepath,
-        #     '--output', '/Users/blakehillwood/Desktop/Testing/outlets.map',
-        #     '--clone', '/Users/blakehillwood/Desktop/Testing/output_strahler.map', #edit - make this dynamic
-        # ], check=True)
-
 
         # Subcatchments to points
         setclone(outputs['ConvertToPcrasterFormat']['OUTPUT'])
