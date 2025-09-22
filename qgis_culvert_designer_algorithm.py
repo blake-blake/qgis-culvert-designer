@@ -228,7 +228,6 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         ## Use this to load an existing file during testing. Uncomment the above when done or to regenerate.
         outputs['Lddcreate'] = {'OUTPUT': '/Users/blakehillwood/Desktop/Testing/output_strahler.map'}
 
-
         feedback.setCurrentStep(step_counter)
         if feedback.isCanceled():
             return {}
@@ -480,21 +479,31 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         ## Add to QGIS project for visualisation ## EDIT - can remove this later...
         QgsProject.instance().addMapLayer(QgsVectorLayer(outputs['RefactorFields']['OUTPUT'], "1d_nwk", "ogr"))
 
+        ## Etract in the inlet ends to use as pour points
 
+        pourpoints_filepath = '/Users/blakehillwood/Desktop/Testing/centroids.col'  ## edit: Create this path dynamically or user input later. Rename to 'pour points'
+    
+
+        alg_params = {
+            'INPUT': outputs['RefactorFields']['OUTPUT'],
+            'VERTICES': '0',
+            'OUTPUT': '/Users/blakehillwood/Desktop/Testing/pour_points.shp'
+        }
+        outputs['ExtractSpecificVertices'] = processing.run('native:extractspecificvertices', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+        
 
         feedback.setCurrentStep(step_counter)
         if feedback.isCanceled():
             return {}
         step_counter += 1
 
-        ## --- Following takes the centroids and defines the subcatchments ---- #
 
-        centroids = QgsVectorLayer(outputs['Centroids']['OUTPUT'], "centroids", "ogr")
-        centroids_filepath = '/Users/blakehillwood/Desktop/Testing/centroids.col'  ## edit: Create this path dynamically or user input later. Rename to 'pour points'
+
+        ## --- Following takes the culvert inlets and defines the subcatchments ---- #
 
         culverts = QgsVectorLayer(outputs['RefactorFields']['OUTPUT'], "1d_nwk", "ogr")
 
-        with open(centroids_filepath, 'w') as f:
+        with open(pourpoints_filepath, 'w') as f:
             # for feat in centroids.getFeatures():
             for feat in culverts.getFeatures():
                 geom = feat.geometry()
@@ -503,25 +512,26 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
                 x = line[0].x()
                 # y = geom.asPoint().y()
                 y = line[0].y()
-                # value = 1 # create a boolean (could be a unique ID later)
-                value = feat.fieldNameIndex('ID')
+                value = 1 # create a boolean (could be a unique ID later ?? maybe not, was giving errors)
+                # value = feat['ID'] # gives errors....
                 f.write(f"{x} {y} {value}\n")
 
-        # convert centroids csv to .map
+       
 
         feedback.setCurrentStep(step_counter)
         if feedback.isCanceled():
             return {}
         step_counter += 1
 
+        ## Convert centroids col file to .map
+
         # Column file to PCRaster Map
         alg_params = {
-            'INPUT': centroids_filepath,
+            'INPUT': pourpoints_filepath,
             'INPUT1': outputs['ConvertToPcrasterFormat']['OUTPUT'],
             'INPUT2': 0,  # Boolean
             'OUTPUT': '/Users/blakehillwood/Desktop/Testing/col2map.map' # parameters['Col2map']
         }
-
         outputs['ColumnFileToPcrasterMap'] = processing.run('pcraster:col2map', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
 
         feedback.setCurrentStep(step_counter)
@@ -533,12 +543,17 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         setclone(outputs['ConvertToPcrasterFormat']['OUTPUT'])
         ldd = readmap(outputs['Lddcreate']['OUTPUT'])
         outlets = readmap(outputs['ColumnFileToPcrasterMap']['OUTPUT'])
+        # aguila(outlets)
 
         outlets_unique = ordinal(cover(uniqueid(outlets),0))
+        # aguila(outlets_unique)
 
         MaxNumOutlets = mapmaximum(outlets_unique) #creates a raster of the maximum value
         MaxNumOutletsTuple = cellvalue(MaxNumOutlets,0,0) #grab a value from a position in a Raster
         MaxNumOutletsValue = MaxNumOutletsTuple[0] # grab first element
+
+        feedback.pushInfo(f'💧 Maximum number of outlets is {MaxNumOutletsValue}')
+
 
         for outlet in range(1, MaxNumOutletsValue + 1):
             subcatchment = catchment(ldd, ifthenelse(outlets_unique == outlet,boolean(1), boolean(0)))
@@ -550,10 +565,6 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         if feedback.isCanceled():
             return {}
         step_counter += 1
-
-        # Longest streampaths using whitebox
-        # input_dem_layer = self.parameterAsRasterLayer(parameters, 'Dem', context)
-        # input_dem = input_dem_layer.source()
 
 
         # Translate (convert format) - This ensures correct tif ready for whitebox
@@ -578,8 +589,8 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         output_dem = os.path.join('/Users/blakehillwood/Desktop/Testing/Whitebox/',"filled_dem.tif") # edit - make this dynamic later
         output_flowdir = os.path.join('/Users/blakehillwood/Desktop/Testing/Whitebox/',"flow_dir.tif") # edit - make this dynamic later
         output_flowacc = os.path.join('/Users/blakehillwood/Desktop/Testing/Whitebox/',"flow_acc.tif") # edit - make this dynamic later
-        output_snapped_pour_points = os.path.join('/Users/blakehillwood/Desktop/Testing/Whitebox/',"snapped.shp")
-        output_longest_flow_path = os.path.join('/Users/blakehillwood/Desktop/Testing/Whitebox/',"snapped.shp")
+        output_snapped_pour_points = os.path.join('/Users/blakehillwood/Desktop/Testing/Whitebox/',"snapped.shp") # edit -- need to create this file in case it hasn't already been created.
+        # output_longest_flow_path = os.path.join('/Users/blakehillwood/Desktop/Testing/Whitebox/',"snapped.shp")
 
         self.wbt.fill_depressions(input_dem, output_dem)
 
@@ -587,24 +598,26 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
 
         self.wbt.d8_flow_accumulation(output_dem, output_flowacc)
 
-        pcraster_pour_points = outputs['Centroids']['OUTPUT']
+        # pcraster_pour_points = outputs['Centroids']['OUTPUT']
+        pour_points = outputs['ExtractSpecificVertices']['OUTPUT']
 
-        self.wbt.snap_pour_points(pcraster_pour_points, output_flowacc, output_snapped_pour_points, snap_dist = 2)
+        self.wbt.snap_pour_points(pour_points, output_flowacc, output_snapped_pour_points, snap_dist = 2)
 
         feedback.setCurrentStep(step_counter)
         if feedback.isCanceled():
             return {}
         step_counter += 1
 
-        #Load layer as a QGIS layer
+        ##Load layer as a QGIS layer
         snapped = QgsVectorLayer(output_snapped_pour_points, 'snapped', 'ogr')
 
-        #To create individualised watersheds and longest streams, we need to split the pour points into individual layers
+
+        ## To create individualised watersheds and longest streams, we need to split the pour points into individual layers
 
         # Split vector layer - this takes the pour points file and creates individual files for each.
         # This is required for the watershed and longest streampath functions performed later.
         alg_params = {
-            'FIELD': 'fid',
+            'FIELD': 'ID',
             'FILE_TYPE': 1,  # shp
             'INPUT': output_snapped_pour_points,
             'PREFIX_FIELD': True,
@@ -620,8 +633,8 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         # Create catchment polygons
 
         for i, feat in enumerate(snapped.getFeatures()):
-            value = int(feat['fid'])
-            self.wbt.watershed(output_flowdir, os.path.join('/Users/blakehillwood/Desktop/Testing/Whitebox/PourPoints/',f"fid_{value}.shp"), os.path.join('/Users/blakehillwood/Desktop/Testing/Whitebox/Catchments/',f"catchment_{value}.tif") )
+            value = int(feat['ID'])
+            self.wbt.watershed(output_flowdir, os.path.join('/Users/blakehillwood/Desktop/Testing/Whitebox/PourPoints/',f"ID_{value}.shp"), os.path.join('/Users/blakehillwood/Desktop/Testing/Whitebox/Catchments/',f"catchment_{value}.tif") )
             self.wbt.longest_flowpath( output_dem, os.path.join('/Users/blakehillwood/Desktop/Testing/Whitebox/Catchments/',f"catchment_{value}.tif"), os.path.join('/Users/blakehillwood/Desktop/Testing/Whitebox/StreamPaths/',f"longest_flowpath_{value}.shp") )
 
             # Polygonize - convert the raster layer from whitebox into a vector.
@@ -671,7 +684,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
 
 
 
-        _id_array = [342, 643, 1077] # Edit - make loop dynamic
+        _id_array = [0, 1, 2] # Edit - make loop dynamic
         flow_rates_by_id = {} # store calculated flow rates in a dictionary
       
         for _id in _id_array:
