@@ -173,7 +173,6 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
 
 
 
-
     def processAlgorithm(self, parameters, context, feedback):
         """
         Here is where the processing itself takes place.
@@ -181,9 +180,17 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
 
         # Use a multi-step feedback, so that individual child algorithm progress reports are adjusted for the
         # overall progress through the model
-        feedback = QgsProcessingMultiStepFeedback(7, feedback)
+        total_steps = 30 # use for updating status bar
+        step_counter = 0 # use for updating status bar
+        feedback = QgsProcessingMultiStepFeedback(total_steps, feedback)
         results = {}
         outputs = {}
+
+        input_dem_layer = self.parameterAsRasterLayer(parameters, 'Dem', context)
+        input_dem_layer.setName("DEM") #use to reference the DEM in raster expressions
+        QgsProject.instance().addMapLayer(input_dem_layer)
+
+
 
         # Convert to PCRaster Format
         alg_params = {
@@ -195,9 +202,10 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
 
         # setclone(outputs['ConvertToPcrasterFormat']['OUTPUT'])
 
-        feedback.setCurrentStep(1)
+        feedback.setCurrentStep(step_counter)
         if feedback.isCanceled():
             return {}
+        step_counter += 1
 
 
         ## EDIT uncomment this later!!!!
@@ -221,9 +229,10 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         outputs['Lddcreate'] = {'OUTPUT': '/Users/blakehillwood/Desktop/Testing/output_strahler.map'}
 
 
-        feedback.setCurrentStep(2)
+        feedback.setCurrentStep(step_counter)
         if feedback.isCanceled():
             return {}
+        step_counter += 1
 
         # streamorder
         alg_params = {
@@ -251,9 +260,10 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
             # aguila(Stream)
             report(Stream, 'stream'+str(order)+'.map') # save to file #EDIT - make this save location dynamic
 
-        feedback.setCurrentStep(3)
+        feedback.setCurrentStep(step_counter)
         if feedback.isCanceled():
             return {}
+        step_counter += 1
 
         # User provided stream order threshold
         ThresholdOrder =  parameters['ThresholdOrder']
@@ -277,11 +287,12 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         outputs['PolygonizeRasterToVector'] = processing.run('gdal:polygonize', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
 
         ## Add to QGIS project for visualisation ## EDIT - can remove this later...
-        QgsProject.instance().addMapLayer(QgsVectorLayer(outputs['PolygonizeRasterToVector']['OUTPUT'], "Polygonized_StreamPath", "ogr"))
+        # QgsProject.instance().addMapLayer(QgsVectorLayer(outputs['PolygonizeRasterToVector']['OUTPUT'], "Polygonized_StreamPath", "ogr"))
 
-        feedback.setCurrentStep(4)
+        feedback.setCurrentStep(step_counter)
         if feedback.isCanceled():
             return {}
+        step_counter += 1
 
         # Intersection - this finds the overlap of the road string with the stream path polygon.
         alg_params = {
@@ -297,12 +308,13 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         outputs['Intersection'] = processing.run('native:intersection', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
 
         ## Add to QGIS project for visualisation ## EDIT - can remove this later...
-        QgsProject.instance().addMapLayer(QgsVectorLayer(outputs['Intersection']['OUTPUT'], "Intersection_road_with_stream", "ogr"))
+        # QgsProject.instance().addMapLayer(QgsVectorLayer(outputs['Intersection']['OUTPUT'], "Intersection_road_with_stream", "ogr"))
 
 
-        feedback.setCurrentStep(5)
+        feedback.setCurrentStep(step_counter)
         if feedback.isCanceled():
             return {}
+        step_counter += 1
 
         # Centroids - since the intersection creates a line type, we want to find the centroid of the line to make our pour point.
         alg_params = {
@@ -314,28 +326,193 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         results['CntrPointsOfLine'] = outputs['Centroids']['OUTPUT']
 
         ## Add to QGIS project for visualisation ## EDIT - can remove this later...
-        QgsProject.instance().addMapLayer(QgsVectorLayer(outputs['Centroids']['OUTPUT'], "Centroids_of_intersections", "ogr"))
+        # QgsProject.instance().addMapLayer(QgsVectorLayer(outputs['Centroids']['OUTPUT'], "Centroids_of_intersections", "ogr"))
 
 
-        feedback.setCurrentStep(6)
+        feedback.setCurrentStep(step_counter)
         if feedback.isCanceled():
             return {}
+        step_counter += 1
 
 
-        ## Following takes the centroids and defines the subcatchments
+        ## Due the the polygon intersection, sometimes two intersections are created when the road string passes on an angle
+        ## Therefore, we need to merge any points that are in a practical sense 'next to each other'
+        ## This is done by creating a buffer, joining the buffer and finding the centroid of the new shape.
+        ## This creates a new point in the middle of the previous intersects to approximate a single inlet location.]
+
+        # Buffer
+        alg_params = {
+            'DISSOLVE': False,
+            'DISTANCE': 1,
+            'END_CAP_STYLE': 2,  # Square
+            'INPUT': outputs['Centroids']['OUTPUT'],
+            'JOIN_STYLE': 0,  # Round
+            'MITER_LIMIT': 2,
+            'SEGMENTS': 5,
+            'SEPARATE_DISJOINT': False,
+            'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+        }
+        outputs['Buffer'] = processing.run('native:buffer', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+
+
+        # Dissolve - combine buffer into a single shape
+        alg_params = {
+            'FIELD': [''],
+            'INPUT': outputs['Buffer']['OUTPUT'],
+            'SEPARATE_DISJOINT': True,
+            'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+        }
+        outputs['Dissolve'] = processing.run('native:dissolve', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+
+        # Join attributes by location - assign the dissolved buffers with the information of the points within.
+        alg_params = {
+            'DISCARD_NONMATCHING': False,
+            'INPUT': outputs['Dissolve']['OUTPUT'],
+            'JOIN':  outputs['Centroids']['OUTPUT'],
+            'JOIN_FIELDS': [''],
+            'METHOD': 0,  # Create separate feature for each matching feature (one-to-many)
+            'PREDICATE': [0],  # intersect
+            'PREFIX': None,
+            'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+        }
+        outputs['JoinAttributesByLocation'] = processing.run('native:joinattributesbylocation', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+
+        # Centroids
+        alg_params = {
+            'ALL_PARTS': True,
+            'INPUT': outputs['JoinAttributesByLocation']['OUTPUT'],
+            'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+        }
+        outputs['Centroids'] = processing.run('native:centroids', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+
+        # Delete duplicate geometries
+        alg_params = {
+            'INPUT': outputs['Centroids']['OUTPUT'],
+            'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+        }
+        outputs['DeleteDuplicateGeometries'] = processing.run('native:deleteduplicategeometries', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+
+        ## Next we need to associate together inlets and outlets on either side of the road.
+        ## This is done with a buffer - it assumes that inlets and outlets will be closer together at approximately the road width.
+
+        # Buffer2
+        alg_params = {
+            'DISSOLVE': False,
+            'DISTANCE': 20, ## EDIT -- make this dyanmic to half the road width
+            'END_CAP_STYLE': 0,  # Round
+            'INPUT': outputs['DeleteDuplicateGeometries']['OUTPUT'],
+            'JOIN_STYLE': 0,  # Round
+            'MITER_LIMIT': 2,
+            'SEGMENTS': 5,
+            'SEPARATE_DISJOINT': False,
+            'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+        }
+        outputs['Buffer2'] = processing.run('native:buffer', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+
+        # Dissolve2
+        alg_params = {
+            'FIELD': [''],
+            'INPUT': outputs['Buffer2']['OUTPUT'],
+            'SEPARATE_DISJOINT': True,
+            'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+        }
+        outputs['Dissolve2'] = processing.run('native:dissolve', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+
+        # Add autoincremental field - used to generate unique IDs for each culvert
+        alg_params = {
+            'FIELD_NAME': 'GENERATED_ID',
+            'GROUP_FIELDS': [''],
+            'INPUT': outputs['Dissolve2']['OUTPUT'],
+            'MODULUS': 0,
+            'SORT_ASCENDING': True,
+            'SORT_EXPRESSION': None,
+            'SORT_NULLS_FIRST': False,
+            'START': 0,
+            'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+        }
+        outputs['AddAutoincrementalField'] = processing.run('native:addautoincrementalfield', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+
+        # Join attributes by location2 - assign unique ID to inlet & outlet within the same buffer
+        alg_params = {
+            'DISCARD_NONMATCHING': False,
+            'INPUT': outputs['DeleteDuplicateGeometries']['OUTPUT'],
+            'JOIN': outputs['AddAutoincrementalField']['OUTPUT'],
+            'JOIN_FIELDS': ['GENERATED_ID'],
+            'METHOD': 0,  # Create separate feature for each matching feature (one-to-many)
+            'PREDICATE': [0],  # intersect
+            'PREFIX': None,
+            'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+        }
+        outputs['JoinAttributesByLocation2'] = processing.run('native:joinattributesbylocation', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+
+
+        # Points to path - join inlets & outlets with matching IDs
+        alg_params = {
+            'CLOSE_PATH': False,
+            'GROUP_EXPRESSION': 'GENERATED_ID',
+            'INPUT': outputs['JoinAttributesByLocation2']['OUTPUT'],
+            'NATURAL_SORT': True,
+            'ORDER_EXPRESSION': None,
+            'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+        }
+        outputs['PointsToPath'] = processing.run('native:pointstopath', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+
+        # Geometry by expression - ensure the culverts are facing downstream
+        alg_params = {
+            'EXPRESSION': "if(raster_value('DEM',1,start_point($geometry))<raster_value('DEM',1,end_point($geometry)), reverse($geometry),$geometry)",
+            'INPUT': outputs['PointsToPath']['OUTPUT'],
+            'OUTPUT_GEOMETRY': 1,  # Line
+            'WITH_M': False,
+            'WITH_Z': True,
+            'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+        }
+        outputs['GeometryByExpression'] = processing.run('native:geometrybyexpression', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+
+    
+        # Refactor fields - this replicates a sample TUFLOW 1d_nwk
+        alg_params = {
+            'FIELDS_MAPPING': [{'alias': '','comment': '','expression': 'GENERATED_ID','length': 36,'name': 'ID','precision': 0,'sub_type': 0,'type': 10,'type_name': 'text'},{'alias': '','comment': '','expression': "'C'",'length': 4,'name': 'Type','precision': 0,'sub_type': 0,'type': 10,'type_name': 'text'},{'alias': '','comment': '','expression': '"Ignore"','length': 1,'name': 'Ignore','precision': 0,'sub_type': 0,'type': 10,'type_name': 'text'},{'alias': '','comment': '','expression': '"UCS"','length': 1,'name': 'UCS','precision': 0,'sub_type': 0,'type': 10,'type_name': 'text'},{'alias': '','comment': '','expression': '$length','length': 15,'name': 'Len_or_ANA','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': '"n_nF_Cd"','length': 15,'name': 'n_nF_Cd','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': "raster_value('DEM', 1, start_point($geometry))",'length': 15,'name': 'US_Invert','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': "raster_value('DEM', 1, end_point($geometry))",'length': 15,'name': 'DS_Invert','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': '"Form_Loss"','length': 15,'name': 'Form_Loss','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': '"pBlockage"','length': 15,'name': 'pBlockage','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': '"Inlet_Type"','length': 50,'name': 'Inlet_Type','precision': 0,'sub_type': 0,'type': 10,'type_name': 'text'},{'alias': '','comment': '','expression': '"Conn_1D_2D"','length': 4,'name': 'Conn_1D_2D','precision': 0,'sub_type': 0,'type': 10,'type_name': 'text'},{'alias': '','comment': '','expression': '"Conn_No"','length': 8,'name': 'Conn_No','precision': 0,'sub_type': 0,'type': 2,'type_name': 'integer'},{'alias': '','comment': '','expression': '"Width_or_D"','length': 15,'name': 'Width_or_D','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': '"Height_or_"','length': 15,'name': 'Height_or_','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': '"Number_of"','length': 8,'name': 'Number_of','precision': 0,'sub_type': 0,'type': 2,'type_name': 'integer'},{'alias': '','comment': '','expression': '"HConF_or_W"','length': 15,'name': 'HConF_or_W','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': '"WConF_or_W"','length': 15,'name': 'WConF_or_W','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': '"EntryC_or_"','length': 15,'name': 'EntryC_or_','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': '"ExitC_or_W"','length': 15,'name': 'ExitC_or_W','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'}],
+            'INPUT': outputs['GeometryByExpression']['OUTPUT'],
+            'OUTPUT': '/Users/blakehillwood/Desktop/Testing/1d_nwk.shp' #edit - make this dynamic (os.path join etc.)
+        }
+        outputs['RefactorFields'] = processing.run('native:refactorfields', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+
+        ## Add to QGIS project for visualisation ## EDIT - can remove this later...
+        QgsProject.instance().addMapLayer(QgsVectorLayer(outputs['RefactorFields']['OUTPUT'], "1d_nwk", "ogr"))
+
+
+
+        feedback.setCurrentStep(step_counter)
+        if feedback.isCanceled():
+            return {}
+        step_counter += 1
+
+        ## --- Following takes the centroids and defines the subcatchments ---- #
 
         centroids = QgsVectorLayer(outputs['Centroids']['OUTPUT'], "centroids", "ogr")
-        centroids_filepath = '/Users/blakehillwood/Desktop/Testing/centroids.col'  ## edit: Create this path dynamically or user input later
+        centroids_filepath = '/Users/blakehillwood/Desktop/Testing/centroids.col'  ## edit: Create this path dynamically or user input later. Rename to 'pour points'
+
+        culverts = QgsVectorLayer(outputs['RefactorFields']['OUTPUT'], "1d_nwk", "ogr")
 
         with open(centroids_filepath, 'w') as f:
-            for feat in centroids.getFeatures():
+            # for feat in centroids.getFeatures():
+            for feat in culverts.getFeatures():
                 geom = feat.geometry()
-                x = geom.asPoint().x()
-                y = geom.asPoint().y()
-                value = 1 # create a boolean (could be a unique ID later)
+                line = geom.asMultiPolyline()[0]
+                # x = geom.asPoint().x()
+                x = line[0].x()
+                # y = geom.asPoint().y()
+                y = line[0].y()
+                # value = 1 # create a boolean (could be a unique ID later)
+                value = feat.fieldNameIndex('ID')
                 f.write(f"{x} {y} {value}\n")
 
         # convert centroids csv to .map
+
+        feedback.setCurrentStep(step_counter)
+        if feedback.isCanceled():
+            return {}
+        step_counter += 1
 
         # Column file to PCRaster Map
         alg_params = {
@@ -346,6 +523,11 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         }
 
         outputs['ColumnFileToPcrasterMap'] = processing.run('pcraster:col2map', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+
+        feedback.setCurrentStep(step_counter)
+        if feedback.isCanceled():
+            return {}
+        step_counter += 1
 
         # Subcatchments to points
         setclone(outputs['ConvertToPcrasterFormat']['OUTPUT'])
@@ -363,6 +545,11 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
             report(subcatchment, 'subcatchment'+str(outlet)+'.map')
             # aguila(subcatchment) # visualise on screen
 
+
+        feedback.setCurrentStep(step_counter)
+        if feedback.isCanceled():
+            return {}
+        step_counter += 1
 
         # Longest streampaths using whitebox
         # input_dem_layer = self.parameterAsRasterLayer(parameters, 'Dem', context)
@@ -382,7 +569,10 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         }
         outputs['TranslateConvertFormat'] = processing.run('gdal:translate', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
         
-
+        feedback.setCurrentStep(step_counter)
+        if feedback.isCanceled():
+            return {}
+        step_counter += 1
 
         input_dem = outputs['TranslateConvertFormat']['OUTPUT']
         output_dem = os.path.join('/Users/blakehillwood/Desktop/Testing/Whitebox/',"filled_dem.tif") # edit - make this dynamic later
@@ -401,6 +591,11 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
 
         self.wbt.snap_pour_points(pcraster_pour_points, output_flowacc, output_snapped_pour_points, snap_dist = 2)
 
+        feedback.setCurrentStep(step_counter)
+        if feedback.isCanceled():
+            return {}
+        step_counter += 1
+
         #Load layer as a QGIS layer
         snapped = QgsVectorLayer(output_snapped_pour_points, 'snapped', 'ogr')
 
@@ -417,6 +612,10 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         }
         outputs['SplitVectorLayer'] = processing.run('native:splitvectorlayer', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
         
+        feedback.setCurrentStep(step_counter)
+        if feedback.isCanceled():
+            return {}
+        step_counter += 1
 
         # Create catchment polygons
 
@@ -458,6 +657,10 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         
 
 
+        feedback.setCurrentStep(step_counter)
+        if feedback.isCanceled():
+            return {}
+        step_counter += 1
 
 
         ## Next we take the subcatchments and perform hydrologic calculations on them
@@ -519,6 +722,11 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
             flow_rates_by_id[int(_id)] = Q_10
             print(f'💧 Flowrate for {_id} is {Q_10}\n')
 
+
+        feedback.setCurrentStep(step_counter)
+        if feedback.isCanceled():
+            return {}
+        step_counter += 1
 
         ## Next use the flow rates to size culverts
         ## Always designing for corrugated metal pipe as observed in industry
@@ -612,7 +820,10 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
             print(f'⭕️ Chosen diameter: {Chosen_D}m with headwater ratio of {Hw_ratio_max}\n')
 
 
-        
+        feedback.setCurrentStep(step_counter)
+        if feedback.isCanceled():
+            return {}
+        step_counter += 1
 
 
 
