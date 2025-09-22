@@ -745,18 +745,17 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         ## Always designing for corrugated metal pipe as observed in industry
         ## Assumes no overtopping and design will factor for high enough embankment
 
-        # Inlet type - straight, projecting, circular corrugated metal pipe
 
-
-        # Inlet control
+        culverts.startEditing() # unlock the culvert shapefile to update the diameter
 
         for _id in _id_array:
 
             Q = flow_rates_by_id[int(_id)]
-            D_array = {0.6,0.9,1.2,1.8,2.4} # standard culvert dia options
+            D_array = [0.6,0.9,1.2,1.8,2.4,3.2] # standard culvert dia options
 
-            # For inlet control
+            ## --- For inlet control --- #
             # For Thin Edge Projecting Inlet - Table 1, HY-8 Equation 1 (HY-8 User Manual / FHWA HDS-5)
+            # Inlet type - straight, projecting, circular corrugated metal pipe
             a = 0.187321 
             b = 0.56771 
             c = -0.156544 
@@ -766,7 +765,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
             KE = 0.9
             SR = 0.5
 
-            # For outlet control
+            ## --- For outlet control --- ##
             Ku = 29 # Constant provided by HDS-5
             n = 0.024 # mannings n of corrugated steel pipe
             g = 9.81 # gravity
@@ -781,7 +780,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
 
             for D in D_array:
 
-                ## ---- INLET CONTROL ---- ##
+                ## ---- INLET CONTROL CALCULATION ---- ##
                 B = D # in the case of a circular culvert
                 QBD = Q/(B*D**1.5)
 
@@ -793,7 +792,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
 
 
 
-                ## ---- OUTLET CONTROL ---- ##
+                ## ---- OUTLET CONTROL CALCULATION ---- ##
                 # Equation 3.5 and 3.6 in FHWA HDS-5
                 A = math.pi * D**2 / 4 # Area
                 P = math.pi*D # Wetted Perimeter
@@ -814,6 +813,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
 
                 print(f'🌊 Outlet control headwater ratio for {_id} with a {D}m dia. barrel is {Hw_oc/D}')
 
+                ## ---- ASSIGNING VALUES ---- ##
 
                 if Hw_ic > Hw_oc:
                     print(f'Inlet controlled\n')
@@ -832,6 +832,13 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
 
             print(f'⭕️ Chosen diameter: {Chosen_D}m with headwater ratio of {Hw_ratio_max}\n')
 
+            for culvert in culverts.getFeatures(f"ID={_id}"): #filter by 'ID'
+                culvert['Width_or_D'] = float(Chosen_D)
+                culvert['Number_of'] = int(1) ## EDIT -- update this later for multi barrel configurations
+                culverts.updateFeature(culvert)
+
+
+        culverts.commitChanges()
 
         feedback.setCurrentStep(step_counter)
         if feedback.isCanceled():
