@@ -63,7 +63,7 @@ import processing
 # from shapely.geometry import mapping
 from whitebox import WhiteboxTools
 
-# # edi later - delete this class
+# # edit later - delete this class
 # class PourPoint:
 #     """
 #     This is a class to contain all the information
@@ -148,7 +148,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
                 'ThresholdOrder',
                 self.tr('Stream order threshold'),
                 type=QgsProcessingParameterNumber.Integer,
-                defaultValue=8,
+                defaultValue=4,
                 minValue=1
             )
         )
@@ -210,23 +210,23 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
 
         ## EDIT uncomment this later!!!!
         ## Ldd create is used to calculate the flow path directions
-        # lddcreate
-        # alg_params = {
-        #     'INPUT': outputs['ConvertToPcrasterFormat']['OUTPUT'],
-        #     'INPUT0': 0,  # No
-        #     'INPUT1': 0,  # Map units
-        #     'INPUT2': 9999999,
-        #     'INPUT3': 9999999,
-        #     'INPUT4': 9999999,
-        #     'INPUT5': 9999999,
-        #     # 'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT # if temporary file
-        #     'OUTPUT': '/Users/blakehillwood/Desktop/Testing/output_strahler.map'  # create a .map output saved on drive
+        ## lddcreate
+        alg_params = {
+            'INPUT': outputs['ConvertToPcrasterFormat']['OUTPUT'],
+            'INPUT0': 0,  # No
+            'INPUT1': 0,  # Map units
+            'INPUT2': 9999999,
+            'INPUT3': 9999999,
+            'INPUT4': 9999999,
+            'INPUT5': 9999999,
+            # 'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT # if temporary file
+            'OUTPUT': '/Users/blakehillwood/Desktop/Testing/output_strahler.map'  # create a .map output saved on drive
 
-        # }
-        # outputs['Lddcreate'] = processing.run('pcraster:lddcreate', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+        }
+        outputs['Lddcreate'] = processing.run('pcraster:lddcreate', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
 
         ## Use this to load an existing file during testing. Uncomment the above when done or to regenerate.
-        outputs['Lddcreate'] = {'OUTPUT': '/Users/blakehillwood/Desktop/Testing/output_strahler.map'}
+        # outputs['Lddcreate'] = {'OUTPUT': '/Users/blakehillwood/Desktop/Testing/output_strahler.map'}
 
         feedback.setCurrentStep(step_counter)
         if feedback.isCanceled():
@@ -268,8 +268,8 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         ThresholdOrder =  parameters['ThresholdOrder']
 
         if ThresholdOrder > MaxStrahlerOrder:
-            ThresholdOrder = MaxStrahlerOrder
-            feedback.pushInfo(f'Chosen threshold was above maximum, using maximum of {MaxStrahlerOrder} instead.')
+            ThresholdOrder = MaxStrahlerOrderValue
+            feedback.pushInfo(f'Chosen threshold was above maximum, using maximum of {MaxStrahlerOrderValue} instead.')
 
         chosen_stream_path = os.path.join(os.getcwd(),'stream'+str(ThresholdOrder)+'.map')
         # iface.addRasterLayer(os.path.join(os.getcwd(),'stream'+str(ThresholdOrder)+'.map'), 'stream ≥ '+str(ThresholdOrder))
@@ -286,7 +286,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         outputs['PolygonizeRasterToVector'] = processing.run('gdal:polygonize', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
 
         ## Add to QGIS project for visualisation ## EDIT - can remove this later...
-        # QgsProject.instance().addMapLayer(QgsVectorLayer(outputs['PolygonizeRasterToVector']['OUTPUT'], "Polygonized_StreamPath", "ogr"))
+        QgsProject.instance().addMapLayer(QgsVectorLayer(outputs['PolygonizeRasterToVector']['OUTPUT'], "Polygonized_StreamPath", "ogr"))
 
         feedback.setCurrentStep(step_counter)
         if feedback.isCanceled():
@@ -302,12 +302,14 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
             'OVERLAY': outputs['PolygonizeRasterToVector']['OUTPUT'],
             'OVERLAY_FIELDS': [''],
             'OVERLAY_FIELDS_PREFIX': None,
-            'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+            # 'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+            'OUTPUT': '/Users/blakehillwood/Desktop/Testing/intersections.shp' #edit - make this dynamic
+
         }
         outputs['Intersection'] = processing.run('native:intersection', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
 
         ## Add to QGIS project for visualisation ## EDIT - can remove this later...
-        # QgsProject.instance().addMapLayer(QgsVectorLayer(outputs['Intersection']['OUTPUT'], "Intersection_road_with_stream", "ogr"))
+        QgsProject.instance().addMapLayer(QgsVectorLayer(outputs['Intersection']['OUTPUT'], "Intersection_road_with_stream", "ogr"))
 
 
         feedback.setCurrentStep(step_counter)
@@ -325,7 +327,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         results['CntrPointsOfLine'] = outputs['Centroids']['OUTPUT']
 
         ## Add to QGIS project for visualisation ## EDIT - can remove this later...
-        # QgsProject.instance().addMapLayer(QgsVectorLayer(outputs['Centroids']['OUTPUT'], "Centroids_of_intersections", "ogr"))
+        QgsProject.instance().addMapLayer(QgsVectorLayer(outputs['Centroids']['OUTPUT'], "Centroids_of_intersections", "ogr"))
 
 
         feedback.setCurrentStep(step_counter)
@@ -397,7 +399,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         # Buffer2
         alg_params = {
             'DISSOLVE': False,
-            'DISTANCE': 20, ## EDIT -- make this dyanmic to half the road width
+            'DISTANCE': 80, ## EDIT -- make this dyanmic to half the road width
             'END_CAP_STYLE': 0,  # Round
             'INPUT': outputs['DeleteDuplicateGeometries']['OUTPUT'],
             'JOIN_STYLE': 0,  # Round
@@ -839,6 +841,8 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
 
 
         culverts.commitChanges()
+
+
 
         feedback.setCurrentStep(step_counter)
         if feedback.isCanceled():
