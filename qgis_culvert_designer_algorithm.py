@@ -30,6 +30,7 @@ __copyright__ = '(C) 2025 by Blake Hillwood'
 
 __revision__ = '$Format:%H$'
 
+import shutil
 import os
 import inspect
 import subprocess
@@ -55,7 +56,8 @@ from qgis.core import (QgsProcessing,
                        QgsGeometry,
                        QgsCoordinateTransform,
                        QgsProject,
-                       QgsProcessingParameterDefinition)
+                       QgsProcessingParameterDefinition,
+                       QgsProcessingParameterEnum)
 import processing
 
 # import geopandas as gpd
@@ -123,6 +125,12 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         # INPUTS
         # We add the input vector features source. It can have any kind of
         # geometry.
+
+        self.addParameter(QgsProcessingParameterEnum('chosen_rainfall_analysis', 'Chosen Rainfall Analysis', options=['Flavels RFFP2000 (Pilbara)','Rational (basic, global)'], allowMultiple=False, usesStaticStrings=False, defaultValue=0))
+
+        self.addParameter(QgsProcessingParameterFile('base_folder', 'Base Folder', behavior=QgsProcessingParameterFile.Folder, fileFilter='All files (*.*)', defaultValue=None))
+
+
         self.addParameter(
             QgsProcessingParameterFeatureSource(
                 'RoadAlignment',
@@ -160,9 +168,42 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
             )
         )
 
-        param = QgsProcessingParameterFile('output_strahlermap', 'output_strahler.map', optional=True, behavior=QgsProcessingParameterFile.File, fileFilter='Flow Direction File (*.map)', defaultValue=None)
+        param = QgsProcessingParameterFile(
+            'output_strahlermap', 
+            'output_strahler.map', 
+            optional=True, 
+            behavior=QgsProcessingParameterFile.File, 
+            fileFilter='Flow Direction File (*.map)', 
+            defaultValue='/Users/blakehillwood/Desktop/Testing/output_strahler.map'
+        ) ##EDIT -- replace defailt with None
         param.setFlags(param.flags() | QgsProcessingParameterDefinition.FlagAdvanced)
         self.addParameter(param)
+
+
+    def initialiseFolders(self, parameters, context, feedback):
+        base_folder = self.parameterAsFile(parameters, 'base_folder', context)
+
+        if not os.path.exists(base_folder):
+            os.makedirs(base_folder)
+
+        folders = {
+            "base": base_folder,
+            "whitebox": os.path.join(base_folder, "Whitebox"),
+            "catchments": os.path.join(base_folder, "Whitebox/Catchments"),
+            "pour_points": os.path.join(base_folder, "Whitebox/PourPoints"),
+            "stream_paths": os.path.join(base_folder, "Whitebox/StreamPaths"),
+            "pcraster": os.path.join(base_folder, "PCRaster"),
+            "qgis": os.path.join(base_folder, "QGISIntermediates"),
+            "lddcreate": os.path.join(base_folder, "PCRaster/Lddcreate"),
+            "strahler": os.path.join(base_folder, "PCRaster/StrahlerOrders"),
+            "culvert": os.path.join(base_folder, "CulvertNetwork")
+        }
+
+
+        for folder in folders.values():
+            os.makedirs(folder, exist_ok=True)
+
+        return folders
 
 
 
@@ -179,12 +220,12 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         results = {}
         outputs = {}
 
+        folders = self.initialiseFolders(parameters, context, feedback)
+
         input_dem_layer = self.parameterAsRasterLayer(parameters, 'Dem', context)
         input_dem_layer.setName("DEM") #use to reference the DEM in raster expressions
         QgsProject.instance().addMapLayer(input_dem_layer)
-
-
-
+        
         # Convert to PCRaster Format
         alg_params = {
             'INPUT': parameters['Dem'],
@@ -205,6 +246,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         if not output_strahlermap:
             ## Ldd create is used to calculate the flow path directions
             ## lddcreate
+
             alg_params = {
                 'INPUT': outputs['ConvertToPcrasterFormat']['OUTPUT'],
                 'INPUT0': 0,  # No
@@ -213,14 +255,16 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
                 'INPUT3': 9999999,
                 'INPUT4': 9999999,
                 'INPUT5': 9999999,
-                # 'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT # if temporary file
-                'OUTPUT': '/Users/blakehillwood/Desktop/Testing/output_strahler.map'  # create a .map output saved on drive
+                'OUTPUT': os.path.join(folders['lddcreate'], 'output_strahlermap.map')  # create a .map output saved locally
 
             }
             outputs['Lddcreate'] = processing.run('pcraster:lddcreate', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
         else:
-            ## Use this to load an existing file during testing. Uncomment the above when done or to regenerate.
-            outputs['Lddcreate'] = {'OUTPUT': output_strahlermap}
+            ## Use this to copy and load an existing file
+            new_path = os.path.join(folders['lddcreate'], 'output_strahlermap.map')
+            shutil.copy(output_strahlermap, new_path)
+            outputs['Lddcreate'] = {'OUTPUT': new_path} # uses the original specified file
+
 
         if feedback.isCanceled():
             return {}
@@ -230,7 +274,6 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         # streamorder
         alg_params = {
             'INPUT': outputs['Lddcreate']['OUTPUT'],
-            # 'OUTPUT': parameters['StreamOrder']
             'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
         }
         outputs['Streamorder'] = processing.run('pcraster:streamorder', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
@@ -248,19 +291,17 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         MaxStrahlerOrderTuple = cellvalue(MaxStrahlerOrder,0,0) #grab a value from a position in a Raster
         MaxStrahlerOrderValue = MaxStrahlerOrderTuple[0] # grab first element
 
-        for order in range(1,MaxStrahlerOrderValue + 1):
-            if feedback.isCanceled():
-                return {}
-            Stream = ifthen(StrahlerOrder >= order, boolean (1)) #filter out each stream order from 1 to the maximum stream order
-            # aguila(Stream)
-            report(Stream, 'stream'+str(order)+'.map') # save to file #EDIT - make this save location dynamic
-
-        # feedback.setCurrentStep(step_counter)
-        # if feedback.isCanceled():
-        #     return {}
-        # step_counter += 1
         if feedback.isCanceled():
             return {}
+
+
+        # Filter and seperate out strahler order maps
+        for order in range(1, MaxStrahlerOrderValue + 1):
+            Stream = ifthen(StrahlerOrder >= order, boolean (1)) #filter out each stream order from 1 to the maximum stream order
+            report(Stream, os.path.join(folders['strahler'], 'stream'+str(order)+'.map')) # save to file 
+            if feedback.isCanceled():
+                return {}
+
         self.updateProgress(feedback)
 
         # User provided stream order threshold
@@ -270,8 +311,8 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
             ThresholdOrder = MaxStrahlerOrderValue
             feedback.pushInfo(f'Chosen threshold was above maximum, using maximum of {MaxStrahlerOrderValue} instead.')
 
-        chosen_stream_path = os.path.join(os.getcwd(),'stream'+str(ThresholdOrder)+'.map')
-        # iface.addRasterLayer(os.path.join(os.getcwd(),'stream'+str(ThresholdOrder)+'.map'), 'stream ≥ '+str(ThresholdOrder))
+        chosen_stream_path = os.path.join(folders['strahler'],'stream'+str(ThresholdOrder)+'.map')
+        iface.addRasterLayer(os.path.join(folders['strahler'],'stream'+str(ThresholdOrder)+'.map'), 'stream ≥ '+str(ThresholdOrder))
 
         # Polygonize (raster to vector) - convert the chosen stream path into a polygon so we can calculate intersections
         alg_params = {
@@ -280,7 +321,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
             'EXTRA': None,
             'FIELD': 'DN',
             'INPUT': chosen_stream_path,
-            'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+            'OUTPUT': os.path.join(folders['qgis'], 'Polygonized_StreamPath.shp')
         }
         outputs['PolygonizeRasterToVector'] = processing.run('gdal:polygonize', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
 
@@ -300,8 +341,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
             'OVERLAY': outputs['PolygonizeRasterToVector']['OUTPUT'],
             'OVERLAY_FIELDS': [''],
             'OVERLAY_FIELDS_PREFIX': None,
-            # 'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
-            'OUTPUT': '/Users/blakehillwood/Desktop/Testing/intersections.shp' #edit - make this dynamic
+            'OUTPUT': os.path.join(folders['qgis'], 'intersections.shp')
 
         }
         outputs['Intersection'] = processing.run('native:intersection', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
@@ -318,7 +358,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         alg_params = {
             'ALL_PARTS': False,
             'INPUT': outputs['Intersection']['OUTPUT'],
-            'OUTPUT': '/Users/blakehillwood/Desktop/Testing/centroids.shp' #edit - make this dynamic
+            'OUTPUT': os.path.join(folders['qgis'],'centroids.shp')
         }
         outputs['Centroids'] = processing.run('native:centroids', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
         results['CntrPointsOfLine'] = outputs['Centroids']['OUTPUT']
@@ -470,7 +510,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         alg_params = {
             'FIELDS_MAPPING': [{'alias': '','comment': '','expression': 'GENERATED_ID','length': 36,'name': 'ID','precision': 0,'sub_type': 0,'type': 10,'type_name': 'text'},{'alias': '','comment': '','expression': "'C'",'length': 4,'name': 'Type','precision': 0,'sub_type': 0,'type': 10,'type_name': 'text'},{'alias': '','comment': '','expression': '"Ignore"','length': 1,'name': 'Ignore','precision': 0,'sub_type': 0,'type': 10,'type_name': 'text'},{'alias': '','comment': '','expression': '"UCS"','length': 1,'name': 'UCS','precision': 0,'sub_type': 0,'type': 10,'type_name': 'text'},{'alias': '','comment': '','expression': '$length','length': 15,'name': 'Len_or_ANA','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': '"n_nF_Cd"','length': 15,'name': 'n_nF_Cd','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': "raster_value('DEM', 1, start_point($geometry))",'length': 15,'name': 'US_Invert','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': "raster_value('DEM', 1, end_point($geometry))",'length': 15,'name': 'DS_Invert','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': '"Form_Loss"','length': 15,'name': 'Form_Loss','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': '"pBlockage"','length': 15,'name': 'pBlockage','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': '"Inlet_Type"','length': 50,'name': 'Inlet_Type','precision': 0,'sub_type': 0,'type': 10,'type_name': 'text'},{'alias': '','comment': '','expression': '"Conn_1D_2D"','length': 4,'name': 'Conn_1D_2D','precision': 0,'sub_type': 0,'type': 10,'type_name': 'text'},{'alias': '','comment': '','expression': '"Conn_No"','length': 8,'name': 'Conn_No','precision': 0,'sub_type': 0,'type': 2,'type_name': 'integer'},{'alias': '','comment': '','expression': '"Width_or_D"','length': 15,'name': 'Width_or_D','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': '"Height_or_"','length': 15,'name': 'Height_or_','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': '"Number_of"','length': 8,'name': 'Number_of','precision': 0,'sub_type': 0,'type': 2,'type_name': 'integer'},{'alias': '','comment': '','expression': '"HConF_or_W"','length': 15,'name': 'HConF_or_W','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': '"WConF_or_W"','length': 15,'name': 'WConF_or_W','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': '"EntryC_or_"','length': 15,'name': 'EntryC_or_','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': '"ExitC_or_W"','length': 15,'name': 'ExitC_or_W','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'}],
             'INPUT': outputs['GeometryByExpression']['OUTPUT'],
-            'OUTPUT': '/Users/blakehillwood/Desktop/Testing/1d_nwk.shp' #edit - make this dynamic (os.path join etc.)
+            'OUTPUT': os.path.join(folders['culvert'],'1d_nwk.shp') #edit - make this dynamic (os.path join etc.)
         }
         outputs['RefactorFields'] = processing.run('native:refactorfields', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
 
@@ -479,13 +519,13 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
 
         ## Etract in the inlet ends to use as pour points
 
-        pourpoints_filepath = '/Users/blakehillwood/Desktop/Testing/centroids.col'  ## edit: Create this path dynamically or user input later. Rename to 'pour points'
+        pourpoints_filepath = os.path.join(folders['pcraster'], 'pour_points.col')
     
 
         alg_params = {
             'INPUT': outputs['RefactorFields']['OUTPUT'],
             'VERTICES': '0',
-            'OUTPUT': '/Users/blakehillwood/Desktop/Testing/pour_points.shp'
+            'OUTPUT': os.path.join(folders['qgis'], 'pour_points.shp')
         }
         outputs['ExtractSpecificVertices'] = processing.run('native:extractspecificvertices', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
         
@@ -501,10 +541,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         culverts = QgsVectorLayer(outputs['RefactorFields']['OUTPUT'], "1d_nwk", "ogr")
 
         with open(pourpoints_filepath, 'w') as f:
-            # for feat in centroids.getFeatures():
             for feat in culverts.getFeatures():
-                if feedback.isCanceled():
-                    return {}
                 geom = feat.geometry()
                 line = geom.asMultiPolyline()[0]
                 # x = geom.asPoint().x()
@@ -514,6 +551,9 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
                 value = 1 # create a boolean (could be a unique ID later ?? maybe not, was giving errors)
                 # value = feat['ID'] # gives errors....
                 f.write(f"{x} {y} {value}\n")
+
+                if feedback.isCanceled():
+                    return {}
 
        
 
@@ -571,7 +611,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
             'NODATA': -9999,
             'OPTIONS': None,
             'TARGET_CRS': QgsCoordinateReferenceSystem('EPSG:32760'),
-            'OUTPUT': os.path.join('/Users/blakehillwood/Desktop/Testing/Whitebox/',"cleaned_dem.tif")
+            'OUTPUT': os.path.join(folders['whitebox'],"cleaned_dem.tif")
         }
         outputs['TranslateConvertFormat'] = processing.run('gdal:translate', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
         
@@ -580,11 +620,10 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         self.updateProgress(feedback)
 
         input_dem = outputs['TranslateConvertFormat']['OUTPUT']
-        output_dem = os.path.join('/Users/blakehillwood/Desktop/Testing/Whitebox/',"filled_dem.tif") # edit - make this dynamic later
-        output_flowdir = os.path.join('/Users/blakehillwood/Desktop/Testing/Whitebox/',"flow_dir.tif") # edit - make this dynamic later
-        output_flowacc = os.path.join('/Users/blakehillwood/Desktop/Testing/Whitebox/',"flow_acc.tif") # edit - make this dynamic later
-        output_snapped_pour_points = os.path.join('/Users/blakehillwood/Desktop/Testing/Whitebox/',"snapped.shp") # edit -- need to create this file in case it hasn't already been created.
-        # output_longest_flow_path = os.path.join('/Users/blakehillwood/Desktop/Testing/Whitebox/',"snapped.shp")
+        output_dem = os.path.join(folders['whitebox'],"filled_dem.tif") 
+        output_flowdir = os.path.join(folders['whitebox'],"flow_dir.tif") 
+        output_flowacc = os.path.join(folders['whitebox'],"flow_acc.tif") 
+        output_snapped_pour_points = os.path.join(folders['pour_points'],"snapped.shp") # edit -- need to create this file in case it hasn't already been created.
 
         self.wbt.fill_depressions(input_dem, output_dem)
 
@@ -623,7 +662,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
             'FILE_TYPE': 1,  # shp
             'INPUT': output_snapped_pour_points,
             'PREFIX_FIELD': True,
-            'OUTPUT': os.path.join('/Users/blakehillwood/Desktop/Testing/Whitebox/PourPoints/',"") # folder path
+            'OUTPUT': folders['pour_points']
         }
         outputs['SplitVectorLayer'] = processing.run('native:splitvectorlayer', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
         
@@ -634,30 +673,30 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         # Create catchment polygons
 
         for i, feat in enumerate(snapped.getFeatures()):
-            if feedback.isCanceled():
-                return {}
+
             value = int(feat['ID'])
-            self.wbt.watershed(output_flowdir, os.path.join('/Users/blakehillwood/Desktop/Testing/Whitebox/PourPoints/',f"ID_{value}.shp"), os.path.join('/Users/blakehillwood/Desktop/Testing/Whitebox/Catchments/',f"catchment_{value}.tif") )
+            self.wbt.watershed(output_flowdir, os.path.join(folders['pour_points'],f"ID_{value}.shp"), os.path.join(folders['catchments'],f"catchment_{value}.tif") )
             
             if feedback.isCanceled():
                 return {}
+            self.updateProgress(feedback)
         
-            self.wbt.longest_flowpath( output_dem, os.path.join('/Users/blakehillwood/Desktop/Testing/Whitebox/Catchments/',f"catchment_{value}.tif"), os.path.join('/Users/blakehillwood/Desktop/Testing/Whitebox/StreamPaths/',f"longest_flowpath_{value}.shp") )
+            self.wbt.longest_flowpath( output_dem, os.path.join(folders['catchments'],f"catchment_{value}.tif"), os.path.join(folders['stream_paths'],f"longest_flowpath_{value}.shp") )
 
             # Polygonize - convert the raster layer from whitebox into a vector.
             alg_params = {
-            'BAND': 1,
-            'EIGHT_CONNECTEDNESS': False,
-            'EXTRA': '',
-            'FIELD': 'DN',
-            'INPUT': os.path.join('/Users/blakehillwood/Desktop/Testing/Whitebox/Catchments/',f"catchment_{value}.tif"),
-            'OUTPUT': os.path.join('/Users/blakehillwood/Desktop/Testing/Whitebox/Catchments/',f"catchment_{value}.shp")
+                'BAND': 1,
+                'EIGHT_CONNECTEDNESS': False,
+                'EXTRA': '',
+                'FIELD': 'DN',
+                'INPUT': os.path.join(folders['catchments'],f"catchment_{value}.tif"),
+                'OUTPUT': os.path.join(folders['catchments'],f"catchment_{value}.shp")
             }
             outputs[f'PolygonizeRasterToVector_{value}'] = processing.run('gdal:polygonize', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
 
             # Remove null geometries
             alg_params = {
-                'INPUT': os.path.join('/Users/blakehillwood/Desktop/Testing/Whitebox/Catchments/',f"catchment_{value}.shp"),
+                'INPUT': os.path.join(folders['catchments'],f"catchment_{value}.shp"),
                 'REMOVE_EMPTY': True,
                 'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
             }
@@ -669,12 +708,15 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
                 'FIELD': [''],
                 'INPUT': outputs['RemoveNullGeometries']['OUTPUT'],
                 'SEPARATE_DISJOINT': False,
-                'OUTPUT': os.path.join('/Users/blakehillwood/Desktop/Testing/Whitebox/Catchments/',f"catchment_{value}.shp")
+                'OUTPUT': os.path.join(folders['catchments'],f"catchment_{value}.shp")
             }
             outputs['Dissolve'] = processing.run('native:dissolve', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
         
             number_of_features = i 
         
+            if feedback.isCanceled():
+                return {}
+            self.updateProgress(feedback)
 
 
         if feedback.isCanceled():
@@ -689,6 +731,15 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         ## Refer Design flood estimation in Western Australia by David Flavell, 2012
 
 
+        selected_runoff_method = self.parameterAsEnum(parameters, 'chosen_rainfall_analysis', context)
+        ## options=['Flavels RFFP2000 (Pilbara)' = 0,'Rational (basic, global)' = 1]
+
+        if selected_runoff_method == 0:
+            feedback.pushInfo(f'🌧️ Runoff method selected: Flavels RFFP2000 (Pilbara)')
+        else:
+            feedback.pushInfo(f'🌧️ Runoff method selected: Rational (basic, global)')
+
+
 
         _id_array = [0, 1, 2] # Edit - make loop dynamic
         flow_rates_by_id = {} # store calculated flow rates in a dictionary
@@ -696,8 +747,8 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         for _id in _id_array:
             if feedback.isCanceled():
                 return {}
-            catchment_filepath = os.path.join('/Users/blakehillwood/Desktop/Testing/Whitebox/Catchments/',f"catchment_{_id}.shp")
-            longest_flowpath_filepath = os.path.join('/Users/blakehillwood/Desktop/Testing/Whitebox/StreamPaths/',f"longest_flowpath_{_id}.shp")
+            catchment_filepath = os.path.join(folders['catchments'],f"catchment_{_id}.shp")
+            longest_flowpath_filepath = os.path.join(folders['stream_paths'],f"longest_flowpath_{_id}.shp")
 
             catchment_QGIS = QgsVectorLayer(catchment_filepath, "catchment", "ogr")
             flowpath_QGIS = QgsVectorLayer(longest_flowpath_filepath, "flowpath", "ogr")
