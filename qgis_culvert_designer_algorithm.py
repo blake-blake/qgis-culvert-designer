@@ -224,17 +224,33 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
 
         input_dem_layer = self.parameterAsRasterLayer(parameters, 'Dem', context)
         input_dem_layer.setName("DEM") #use to reference the DEM in raster expressions
+        dem_crs = input_dem_layer.crs()
         QgsProject.instance().addMapLayer(input_dem_layer)
-        
+
+
+        road_layer = self.parameterAsVectorLayer(parameters, 'RoadAlignment', context)
+        if road_layer.crs() != dem_crs:
+           # Reproject layer
+            alg_params = {
+                'CONVERT_CURVED_GEOMETRIES': False,
+                'INPUT': road_layer,
+                'OPERATION': '',
+                'TARGET_CRS': dem_crs,
+                'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+            }
+            outputs['ReprojectLayer'] = processing.run('native:reprojectlayer', alg_params, context=context, feedback=feedback, is_child_algorithm=True) 
+
+        QgsProject.instance().addMapLayer(input_dem_layer)
+        QgsProject.instance().addMapLayer(road_layer)
+
         # Convert to PCRaster Format
         alg_params = {
-            'INPUT': parameters['Dem'],
+            'INPUT': input_dem_layer,
             'INPUT2': 3,  # Scalar
-            'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+            'OUTPUT': os.path.join(folders['pcraster'],'pcraster_dem.map')
         }
         outputs['ConvertToPcrasterFormat'] = processing.run('pcraster:converttopcrasterformat', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
 
-        # setclone(outputs['ConvertToPcrasterFormat']['OUTPUT'])
 
         if feedback.isCanceled():
             return {}
@@ -274,7 +290,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         # streamorder
         alg_params = {
             'INPUT': outputs['Lddcreate']['OUTPUT'],
-            'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+            'OUTPUT': os.path.join(folders['pcraster'], 'streamorder.map')
         }
         outputs['Streamorder'] = processing.run('pcraster:streamorder', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
         results['StreamOrder'] = outputs['Streamorder']['OUTPUT']
@@ -312,8 +328,9 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
             feedback.pushInfo(f'Chosen threshold was above maximum, using maximum of {MaxStrahlerOrderValue} instead.')
 
         chosen_stream_path = os.path.join(folders['strahler'],'stream'+str(ThresholdOrder)+'.map')
-        iface.addRasterLayer(os.path.join(folders['strahler'],'stream'+str(ThresholdOrder)+'.map'), 'stream ≥ '+str(ThresholdOrder))
-
+        
+        results['strahler'] = chosen_stream_path
+        
         # Polygonize (raster to vector) - convert the chosen stream path into a polygon so we can calculate intersections
         alg_params = {
             'BAND': 1,
@@ -326,7 +343,8 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         outputs['PolygonizeRasterToVector'] = processing.run('gdal:polygonize', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
 
         ## Add to QGIS project for visualisation ## EDIT - can remove this later...
-        QgsProject.instance().addMapLayer(QgsVectorLayer(outputs['PolygonizeRasterToVector']['OUTPUT'], "Polygonized_StreamPath", "ogr"))
+        # QgsProject.instance().addMapLayer(QgsVectorLayer(outputs['PolygonizeRasterToVector']['OUTPUT'], "Polygonized_StreamPath", "ogr"))
+        results['Polygonized_StreamPath'] = outputs['PolygonizeRasterToVector']['OUTPUT']
 
         if feedback.isCanceled():
             return {}
@@ -347,8 +365,8 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         outputs['Intersection'] = processing.run('native:intersection', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
 
         ## Add to QGIS project for visualisation ## EDIT - can remove this later...
-        QgsProject.instance().addMapLayer(QgsVectorLayer(outputs['Intersection']['OUTPUT'], "Intersection_road_with_stream", "ogr"))
-
+        # QgsProject.instance().addMapLayer(QgsVectorLayer(outputs['Intersection']['OUTPUT'], "Intersection_road_with_stream", "ogr"))
+        results['Intersection']=outputs['Intersection']['OUTPUT']
 
         if feedback.isCanceled():
             return {}
@@ -364,7 +382,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         results['CntrPointsOfLine'] = outputs['Centroids']['OUTPUT']
 
         ## Add to QGIS project for visualisation ## EDIT - can remove this later...
-        QgsProject.instance().addMapLayer(QgsVectorLayer(outputs['Centroids']['OUTPUT'], "Centroids_of_intersections", "ogr"))
+        # QgsProject.instance().addMapLayer(QgsVectorLayer(outputs['Centroids']['OUTPUT'], "Centroids_of_intersections", "ogr"))
 
 
         if feedback.isCanceled():
@@ -513,9 +531,10 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
             'OUTPUT': os.path.join(folders['culvert'],'1d_nwk.shp') #edit - make this dynamic (os.path join etc.)
         }
         outputs['RefactorFields'] = processing.run('native:refactorfields', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
-
+        results['RefactorFields'] = outputs['RefactorFields']['OUTPUT']
+       
         ## Add to QGIS project for visualisation ## EDIT - can remove this later...
-        QgsProject.instance().addMapLayer(QgsVectorLayer(outputs['RefactorFields']['OUTPUT'], "1d_nwk", "ogr"))
+        # QgsProject.instance().addMapLayer(QgsVectorLayer(outputs['RefactorFields']['OUTPUT'], "1d_nwk", "ogr"))
 
         ## Etract in the inlet ends to use as pour points
 
@@ -568,7 +587,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
             'INPUT': pourpoints_filepath,
             'INPUT1': outputs['ConvertToPcrasterFormat']['OUTPUT'],
             'INPUT2': 0,  # Boolean
-            'OUTPUT': '/Users/blakehillwood/Desktop/Testing/col2map.map' # parameters['Col2map']
+            'OUTPUT': os.path.join(folders['pcraster'],'col2map.map')
         }
         outputs['ColumnFileToPcrasterMap'] = processing.run('pcraster:col2map', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
 
@@ -607,10 +626,10 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
             'COPY_SUBDATASETS': False,
             'DATA_TYPE': 0,  # Use Input Layer Data Type
             'EXTRA': '',
-            'INPUT': parameters['Dem'],
+            'INPUT': input_dem_layer,
             'NODATA': -9999,
             'OPTIONS': None,
-            'TARGET_CRS': QgsCoordinateReferenceSystem('EPSG:32760'),
+            'TARGET_CRS': dem_crs,
             'OUTPUT': os.path.join(folders['whitebox'],"cleaned_dem.tif")
         }
         outputs['TranslateConvertFormat'] = processing.run('gdal:translate', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
@@ -711,7 +730,13 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
                 'OUTPUT': os.path.join(folders['catchments'],f"catchment_{value}.shp")
             }
             outputs['Dissolve'] = processing.run('native:dissolve', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
-        
+            results[f"catchment_{value}"] = outputs['Dissolve']['OUTPUT']
+            results[f"longest_flowpath_{value}"] = os.path.join(folders['stream_paths'],f"longest_flowpath_{value}.shp")
+
+            ## Add to QGIS Canvas
+            # QgsProject.instance().addMapLayer(QgsVectorLayer(outputs['Dissolve']['OUTPUT'], f"catchment_{value}", "ogr"))
+            # QgsProject.instance().addMapLayer(QgsVectorLayer(os.path.join(folders['stream_paths'],f"longest_flowpath_{value}.shp"), f"longest_flowpath_{value}", "ogr"))
+
             number_of_features = i 
         
             if feedback.isCanceled():
@@ -763,8 +788,10 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
 
             centroid = catchment_geometry.centroid().asPoint()
 
+
             transform_object = QgsCoordinateTransform(catchment_QGIS.sourceCrs(), QgsCoordinateReferenceSystem('EPSG:4326'), QgsProject.instance())         #this is a QgsCoordinateTransform object that has a transform method
 
+            ## Convert the centroids to EPSGL4326 for lat and long extraction required for Flavells RFFP2000
             centroid_transformed = transform_object.transform(centroid)
 
             ## Edit - Uncomment later
