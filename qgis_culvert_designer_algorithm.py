@@ -47,13 +47,15 @@ from qgis.core import (QgsProcessing,
                        QgsProcessingParameterFeatureSource,
                        QgsProcessingParameterFeatureSink,
                        QgsProcessingParameterFileDestination,
+                       QgsProcessingParameterFile,
                        QgsProcessingParameterRasterLayer,
                        QgsProcessingParameterRasterDestination,
                        QgsProcessingParameterNumber,
                        QgsCoordinateReferenceSystem,
                        QgsGeometry,
                        QgsCoordinateTransform,
-                       QgsProject)
+                       QgsProject,
+                       QgsProcessingParameterDefinition)
 import processing
 
 # import geopandas as gpd
@@ -106,6 +108,12 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
 
     wbt = WhiteboxTools()
 
+    def updateProgress(self, feedback):
+        feedback.setCurrentStep(self.step_counter)
+        if feedback.isCanceled():
+            return {}
+        self.step_counter += 1
+
     def initAlgorithm(self, config):
         """
         Here we define the inputs and output of the algorithm, along
@@ -113,7 +121,6 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         """
 
         # INPUTS
-
         # We add the input vector features source. It can have any kind of
         # geometry.
         self.addParameter(
@@ -123,16 +130,6 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
                 [QgsProcessing.TypeVectorAnyGeometry]
             )
         )
-
-        # # We add a feature sink in which to store our processed features (this
-        # # usually takes the form of a newly created vector layer when the
-        # # algorithm is run in QGIS).
-        # self.addParameter(
-        #     QgsProcessingParameterFeatureSink(
-        #         self.OUTPUT,
-        #         self.tr('Output vector')
-        #     )
-        # )
 
         # This is the RASTER input
         self.addParameter(
@@ -148,28 +145,24 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
                 'ThresholdOrder',
                 self.tr('Stream order threshold'),
                 type=QgsProcessingParameterNumber.Integer,
-                defaultValue=4,
+                defaultValue=7,
                 minValue=1
             )
         )
 
-        # OUTPUTS
+        self.addParameter(
+            QgsProcessingParameterNumber(
+                'RoadWidth',
+                self.tr('Approx. Embankment Width (used for culvert grouping)'),
+                type=QgsProcessingParameterNumber.Integer,
+                defaultValue=20,
+                minValue=1
+            )
+        )
 
-        # # This is the strahler order RASTER output
-        # self.addParameter(QgsProcessingParameterRasterDestination('StreamOrder', 'Stream order', createByDefault=True, defaultValue=None))
-        
-        # self.addParameter(
-        #     QgsProcessingParameterFeatureSink(
-        #         'CntrPointsOfLine',
-        #         'cntr points  of line',
-        #         type=QgsProcessing.TypeVectorPoint,
-        #         createByDefault=True,
-        #         supportsAppend=True,
-        #         defaultValue=None
-        #     )
-        # )
-
-
+        param = QgsProcessingParameterFile('output_strahlermap', 'output_strahler.map', optional=True, behavior=QgsProcessingParameterFile.File, fileFilter='Flow Direction File (*.map)', defaultValue=None)
+        param.setFlags(param.flags() | QgsProcessingParameterDefinition.FlagAdvanced)
+        self.addParameter(param)
 
 
 
@@ -178,11 +171,11 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         Here is where the processing itself takes place.
         """
 
-        # Use a multi-step feedback, so that individual child algorithm progress reports are adjusted for the
-        # overall progress through the model
-        total_steps = 30 # use for updating status bar
-        step_counter = 0 # use for updating status bar
-        feedback = QgsProcessingMultiStepFeedback(total_steps, feedback)
+        # # Use a multi-step feedback, so that individual child algorithm progress reports are adjusted for the
+        # # overall progress through the model
+        self.total_steps = 100 # use for updating status bar
+        self.step_counter = 0 # use for updating status bar
+        feedback = QgsProcessingMultiStepFeedback(self.total_steps, feedback)
         results = {}
         outputs = {}
 
@@ -202,36 +195,37 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
 
         # setclone(outputs['ConvertToPcrasterFormat']['OUTPUT'])
 
-        feedback.setCurrentStep(step_counter)
         if feedback.isCanceled():
             return {}
-        step_counter += 1
+        self.updateProgress(feedback)
 
 
-        ## EDIT uncomment this later!!!!
-        ## Ldd create is used to calculate the flow path directions
-        ## lddcreate
-        alg_params = {
-            'INPUT': outputs['ConvertToPcrasterFormat']['OUTPUT'],
-            'INPUT0': 0,  # No
-            'INPUT1': 0,  # Map units
-            'INPUT2': 9999999,
-            'INPUT3': 9999999,
-            'INPUT4': 9999999,
-            'INPUT5': 9999999,
-            # 'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT # if temporary file
-            'OUTPUT': '/Users/blakehillwood/Desktop/Testing/output_strahler.map'  # create a .map output saved on drive
+        output_strahlermap = self.parameterAsFile(parameters, 'output_strahlermap', context)
 
-        }
-        outputs['Lddcreate'] = processing.run('pcraster:lddcreate', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+        if not output_strahlermap:
+            ## Ldd create is used to calculate the flow path directions
+            ## lddcreate
+            alg_params = {
+                'INPUT': outputs['ConvertToPcrasterFormat']['OUTPUT'],
+                'INPUT0': 0,  # No
+                'INPUT1': 0,  # Map units
+                'INPUT2': 9999999,
+                'INPUT3': 9999999,
+                'INPUT4': 9999999,
+                'INPUT5': 9999999,
+                # 'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT # if temporary file
+                'OUTPUT': '/Users/blakehillwood/Desktop/Testing/output_strahler.map'  # create a .map output saved on drive
 
-        ## Use this to load an existing file during testing. Uncomment the above when done or to regenerate.
-        # outputs['Lddcreate'] = {'OUTPUT': '/Users/blakehillwood/Desktop/Testing/output_strahler.map'}
+            }
+            outputs['Lddcreate'] = processing.run('pcraster:lddcreate', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+        else:
+            ## Use this to load an existing file during testing. Uncomment the above when done or to regenerate.
+            outputs['Lddcreate'] = {'OUTPUT': output_strahlermap}
 
-        feedback.setCurrentStep(step_counter)
         if feedback.isCanceled():
             return {}
-        step_counter += 1
+        self.updateProgress(feedback)
+
 
         # streamorder
         alg_params = {
@@ -255,14 +249,19 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         MaxStrahlerOrderValue = MaxStrahlerOrderTuple[0] # grab first element
 
         for order in range(1,MaxStrahlerOrderValue + 1):
+            if feedback.isCanceled():
+                return {}
             Stream = ifthen(StrahlerOrder >= order, boolean (1)) #filter out each stream order from 1 to the maximum stream order
             # aguila(Stream)
             report(Stream, 'stream'+str(order)+'.map') # save to file #EDIT - make this save location dynamic
 
-        feedback.setCurrentStep(step_counter)
+        # feedback.setCurrentStep(step_counter)
+        # if feedback.isCanceled():
+        #     return {}
+        # step_counter += 1
         if feedback.isCanceled():
             return {}
-        step_counter += 1
+        self.updateProgress(feedback)
 
         # User provided stream order threshold
         ThresholdOrder =  parameters['ThresholdOrder']
@@ -288,10 +287,9 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         ## Add to QGIS project for visualisation ## EDIT - can remove this later...
         QgsProject.instance().addMapLayer(QgsVectorLayer(outputs['PolygonizeRasterToVector']['OUTPUT'], "Polygonized_StreamPath", "ogr"))
 
-        feedback.setCurrentStep(step_counter)
         if feedback.isCanceled():
             return {}
-        step_counter += 1
+        self.updateProgress(feedback)
 
         # Intersection - this finds the overlap of the road string with the stream path polygon.
         alg_params = {
@@ -312,10 +310,9 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         QgsProject.instance().addMapLayer(QgsVectorLayer(outputs['Intersection']['OUTPUT'], "Intersection_road_with_stream", "ogr"))
 
 
-        feedback.setCurrentStep(step_counter)
         if feedback.isCanceled():
             return {}
-        step_counter += 1
+        self.updateProgress(feedback)
 
         # Centroids - since the intersection creates a line type, we want to find the centroid of the line to make our pour point.
         alg_params = {
@@ -330,10 +327,9 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         QgsProject.instance().addMapLayer(QgsVectorLayer(outputs['Centroids']['OUTPUT'], "Centroids_of_intersections", "ogr"))
 
 
-        feedback.setCurrentStep(step_counter)
         if feedback.isCanceled():
             return {}
-        step_counter += 1
+        self.updateProgress(feedback)
 
 
         ## Due the the polygon intersection, sometimes two intersections are created when the road string passes on an angle
@@ -399,7 +395,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         # Buffer2
         alg_params = {
             'DISSOLVE': False,
-            'DISTANCE': 80, ## EDIT -- make this dyanmic to half the road width
+            'DISTANCE': parameters['RoadWidth']/2 + 1, 
             'END_CAP_STYLE': 0,  # Round
             'INPUT': outputs['DeleteDuplicateGeometries']['OUTPUT'],
             'JOIN_STYLE': 0,  # Round
@@ -494,10 +490,9 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         outputs['ExtractSpecificVertices'] = processing.run('native:extractspecificvertices', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
         
 
-        feedback.setCurrentStep(step_counter)
         if feedback.isCanceled():
             return {}
-        step_counter += 1
+        self.updateProgress(feedback)
 
 
 
@@ -508,6 +503,8 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         with open(pourpoints_filepath, 'w') as f:
             # for feat in centroids.getFeatures():
             for feat in culverts.getFeatures():
+                if feedback.isCanceled():
+                    return {}
                 geom = feat.geometry()
                 line = geom.asMultiPolyline()[0]
                 # x = geom.asPoint().x()
@@ -520,10 +517,9 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
 
        
 
-        feedback.setCurrentStep(step_counter)
         if feedback.isCanceled():
             return {}
-        step_counter += 1
+        self.updateProgress(feedback)
 
         ## Convert centroids col file to .map
 
@@ -536,10 +532,9 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         }
         outputs['ColumnFileToPcrasterMap'] = processing.run('pcraster:col2map', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
 
-        feedback.setCurrentStep(step_counter)
         if feedback.isCanceled():
             return {}
-        step_counter += 1
+        self.updateProgress(feedback)
 
         # Subcatchments to points
         setclone(outputs['ConvertToPcrasterFormat']['OUTPUT'])
@@ -560,13 +555,11 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         for outlet in range(1, MaxNumOutletsValue + 1):
             subcatchment = catchment(ldd, ifthenelse(outlets_unique == outlet,boolean(1), boolean(0)))
             report(subcatchment, 'subcatchment'+str(outlet)+'.map')
-            # aguila(subcatchment) # visualise on screen
+            
+            if feedback.isCanceled():
+                return {}
+            self.updateProgress(feedback)
 
-
-        feedback.setCurrentStep(step_counter)
-        if feedback.isCanceled():
-            return {}
-        step_counter += 1
 
 
         # Translate (convert format) - This ensures correct tif ready for whitebox
@@ -582,10 +575,9 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         }
         outputs['TranslateConvertFormat'] = processing.run('gdal:translate', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
         
-        feedback.setCurrentStep(step_counter)
         if feedback.isCanceled():
             return {}
-        step_counter += 1
+        self.updateProgress(feedback)
 
         input_dem = outputs['TranslateConvertFormat']['OUTPUT']
         output_dem = os.path.join('/Users/blakehillwood/Desktop/Testing/Whitebox/',"filled_dem.tif") # edit - make this dynamic later
@@ -596,19 +588,27 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
 
         self.wbt.fill_depressions(input_dem, output_dem)
 
+        if feedback.isCanceled():
+            return {}
+
         self.wbt.d8_pointer(output_dem, output_flowdir)
 
+        if feedback.isCanceled():
+            return {}
+
         self.wbt.d8_flow_accumulation(output_dem, output_flowacc)
+
+        if feedback.isCanceled():
+            return {}
 
         # pcraster_pour_points = outputs['Centroids']['OUTPUT']
         pour_points = outputs['ExtractSpecificVertices']['OUTPUT']
 
         self.wbt.snap_pour_points(pour_points, output_flowacc, output_snapped_pour_points, snap_dist = 2)
 
-        feedback.setCurrentStep(step_counter)
         if feedback.isCanceled():
             return {}
-        step_counter += 1
+        self.updateProgress(feedback)
 
         ##Load layer as a QGIS layer
         snapped = QgsVectorLayer(output_snapped_pour_points, 'snapped', 'ogr')
@@ -627,16 +627,21 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         }
         outputs['SplitVectorLayer'] = processing.run('native:splitvectorlayer', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
         
-        feedback.setCurrentStep(step_counter)
         if feedback.isCanceled():
             return {}
-        step_counter += 1
+        self.updateProgress(feedback)
 
         # Create catchment polygons
 
         for i, feat in enumerate(snapped.getFeatures()):
+            if feedback.isCanceled():
+                return {}
             value = int(feat['ID'])
             self.wbt.watershed(output_flowdir, os.path.join('/Users/blakehillwood/Desktop/Testing/Whitebox/PourPoints/',f"ID_{value}.shp"), os.path.join('/Users/blakehillwood/Desktop/Testing/Whitebox/Catchments/',f"catchment_{value}.tif") )
+            
+            if feedback.isCanceled():
+                return {}
+        
             self.wbt.longest_flowpath( output_dem, os.path.join('/Users/blakehillwood/Desktop/Testing/Whitebox/Catchments/',f"catchment_{value}.tif"), os.path.join('/Users/blakehillwood/Desktop/Testing/Whitebox/StreamPaths/',f"longest_flowpath_{value}.shp") )
 
             # Polygonize - convert the raster layer from whitebox into a vector.
@@ -672,10 +677,9 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         
 
 
-        feedback.setCurrentStep(step_counter)
         if feedback.isCanceled():
             return {}
-        step_counter += 1
+        self.updateProgress(feedback)
 
 
         ## Next we take the subcatchments and perform hydrologic calculations on them
@@ -690,6 +694,8 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         flow_rates_by_id = {} # store calculated flow rates in a dictionary
       
         for _id in _id_array:
+            if feedback.isCanceled():
+                return {}
             catchment_filepath = os.path.join('/Users/blakehillwood/Desktop/Testing/Whitebox/Catchments/',f"catchment_{_id}.shp")
             longest_flowpath_filepath = os.path.join('/Users/blakehillwood/Desktop/Testing/Whitebox/StreamPaths/',f"longest_flowpath_{_id}.shp")
 
@@ -737,11 +743,11 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
             flow_rates_by_id[int(_id)] = Q_10
             print(f'💧 Flowrate for {_id} is {Q_10}\n')
 
+            self.updateProgress(feedback)
 
-        feedback.setCurrentStep(step_counter)
         if feedback.isCanceled():
             return {}
-        step_counter += 1
+        self.updateProgress(feedback)
 
         ## Next use the flow rates to size culverts
         ## Always designing for corrugated metal pipe as observed in industry
@@ -751,7 +757,8 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         culverts.startEditing() # unlock the culvert shapefile to update the diameter
 
         for _id in _id_array:
-
+            if feedback.isCanceled():
+                return {}
             Q = flow_rates_by_id[int(_id)]
             D_array = [0.6,0.9,1.2,1.8,2.4,3.2] # standard culvert dia options
 
@@ -781,7 +788,8 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
 
 
             for D in D_array:
-
+                if feedback.isCanceled():
+                    return {}
                 ## ---- INLET CONTROL CALCULATION ---- ##
                 B = D # in the case of a circular culvert
                 QBD = Q/(B*D**1.5)
@@ -831,6 +839,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
                         Hw_ratio_max = Hw_oc/D
                         Chosen_D = D
 
+                self.updateProgress(feedback)
 
             print(f'⭕️ Chosen diameter: {Chosen_D}m with headwater ratio of {Hw_ratio_max}\n')
 
@@ -844,10 +853,9 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
 
 
 
-        feedback.setCurrentStep(step_counter)
         if feedback.isCanceled():
             return {}
-        step_counter += 1
+        self.updateProgress(feedback)
 
 
 
