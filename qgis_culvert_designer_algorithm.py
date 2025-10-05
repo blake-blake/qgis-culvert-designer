@@ -122,9 +122,8 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         with some other properties.
         """
 
-        # INPUTS
-        # We add the input vector features source. It can have any kind of
-        # geometry.
+        ## INPUTS
+        # We add the input vector features source. It can have any kind of geometry.
 
         self.addParameter(QgsProcessingParameterEnum('chosen_rainfall_analysis', 'Chosen Rainfall Analysis', options=['Flavels RFFP2000 (Pilbara)','Rational (basic, global)'], allowMultiple=False, usesStaticStrings=False, defaultValue=0))
 
@@ -153,7 +152,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
                 'ThresholdOrder',
                 self.tr('Stream order threshold'),
                 type=QgsProcessingParameterNumber.Integer,
-                defaultValue=7,
+                defaultValue=8,
                 minValue=1
             )
         )
@@ -163,7 +162,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
                 'RoadWidth',
                 self.tr('Approx. Embankment Width (used for culvert grouping)'),
                 type=QgsProcessingParameterNumber.Integer,
-                defaultValue=20,
+                defaultValue=50,
                 minValue=1
             )
         )
@@ -174,10 +173,19 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
             optional=True, 
             behavior=QgsProcessingParameterFile.File, 
             fileFilter='Flow Direction File (*.map)', 
-            defaultValue='/Users/blakehillwood/Desktop/Testing/output_strahler.map'
+            defaultValue='/Users/blakehillwood/Desktop/Testing/Backup/tuflow test/output_strahler.map'
         ) ##EDIT -- replace defailt with None
         param.setFlags(param.flags() | QgsProcessingParameterDefinition.FlagAdvanced)
         self.addParameter(param)
+
+
+        ## OUTPUTS
+        self.addParameter(
+            QgsProcessingParameterFileDestination(
+                'catchments_output',
+                'Catchments Folder'
+            )
+        )
 
 
     def initialiseFolders(self, parameters, context, feedback):
@@ -278,7 +286,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         else:
             ## Use this to copy and load an existing file
             new_path = os.path.join(folders['lddcreate'], 'output_strahlermap.map')
-            shutil.copy(output_strahlermap, new_path)
+            shutil.copy(output_strahlermap, new_path) # EDIT -- make this robust to if the file selected is already here.
             outputs['Lddcreate'] = {'OUTPUT': new_path} # uses the original specified file
 
 
@@ -443,7 +451,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         # Delete duplicate geometries
         alg_params = {
             'INPUT': outputs['Centroids']['OUTPUT'],
-            'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+            'OUTPUT': os.path.join(folders['qgis'],'inlets_and_outlets.shp')
         }
         outputs['DeleteDuplicateGeometries'] = processing.run('native:deleteduplicategeometries', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
 
@@ -475,7 +483,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
 
         # Add autoincremental field - used to generate unique IDs for each culvert
         alg_params = {
-            'FIELD_NAME': 'GENERATED_ID',
+            'FIELD_NAME': 'GEN_ID',
             'GROUP_FIELDS': [''],
             'INPUT': outputs['Dissolve2']['OUTPUT'],
             'MODULUS': 0,
@@ -483,34 +491,39 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
             'SORT_EXPRESSION': None,
             'SORT_NULLS_FIRST': False,
             'START': 0,
-            'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+            'OUTPUT': os.path.join(folders['qgis'],'incrementedbuffer.shp')
         }
         outputs['AddAutoincrementalField'] = processing.run('native:addautoincrementalfield', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+
+        print("✅ Incremented buffer complete")
 
         # Join attributes by location2 - assign unique ID to inlet & outlet within the same buffer
         alg_params = {
             'DISCARD_NONMATCHING': False,
             'INPUT': outputs['DeleteDuplicateGeometries']['OUTPUT'],
             'JOIN': outputs['AddAutoincrementalField']['OUTPUT'],
-            'JOIN_FIELDS': ['GENERATED_ID'],
+            'JOIN_FIELDS': ['GEN_ID'],
             'METHOD': 0,  # Create separate feature for each matching feature (one-to-many)
             'PREDICATE': [0],  # intersect
             'PREFIX': None,
-            'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+            'OUTPUT': os.path.join(folders['qgis'],'inlets_and_outlets_with_uniqueID.shp')
         }
         outputs['JoinAttributesByLocation2'] = processing.run('native:joinattributesbylocation', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
 
+        print("✅ Join attributes by location2 complete")
 
         # Points to path - join inlets & outlets with matching IDs
         alg_params = {
             'CLOSE_PATH': False,
-            'GROUP_EXPRESSION': 'GENERATED_ID',
+            'GROUP_EXPRESSION': 'GEN_ID',
             'INPUT': outputs['JoinAttributesByLocation2']['OUTPUT'],
             'NATURAL_SORT': True,
             'ORDER_EXPRESSION': None,
-            'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+            'OUTPUT': os.path.join(folders['qgis'],'points_to_path.shp')
         }
         outputs['PointsToPath'] = processing.run('native:pointstopath', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+
+        print("✅ Points to path complete")
 
         # Geometry by expression - ensure the culverts are facing downstream
         alg_params = {
@@ -523,16 +536,19 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         }
         outputs['GeometryByExpression'] = processing.run('native:geometrybyexpression', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
 
+        print("✅ Geometry by expression complete")
     
         # Refactor fields - this replicates a sample TUFLOW 1d_nwk
         alg_params = {
-            'FIELDS_MAPPING': [{'alias': '','comment': '','expression': 'GENERATED_ID','length': 36,'name': 'ID','precision': 0,'sub_type': 0,'type': 10,'type_name': 'text'},{'alias': '','comment': '','expression': "'C'",'length': 4,'name': 'Type','precision': 0,'sub_type': 0,'type': 10,'type_name': 'text'},{'alias': '','comment': '','expression': '"Ignore"','length': 1,'name': 'Ignore','precision': 0,'sub_type': 0,'type': 10,'type_name': 'text'},{'alias': '','comment': '','expression': '"UCS"','length': 1,'name': 'UCS','precision': 0,'sub_type': 0,'type': 10,'type_name': 'text'},{'alias': '','comment': '','expression': '$length','length': 15,'name': 'Len_or_ANA','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': '"n_nF_Cd"','length': 15,'name': 'n_nF_Cd','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': "raster_value('DEM', 1, start_point($geometry))",'length': 15,'name': 'US_Invert','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': "raster_value('DEM', 1, end_point($geometry))",'length': 15,'name': 'DS_Invert','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': '"Form_Loss"','length': 15,'name': 'Form_Loss','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': '"pBlockage"','length': 15,'name': 'pBlockage','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': '"Inlet_Type"','length': 50,'name': 'Inlet_Type','precision': 0,'sub_type': 0,'type': 10,'type_name': 'text'},{'alias': '','comment': '','expression': '"Conn_1D_2D"','length': 4,'name': 'Conn_1D_2D','precision': 0,'sub_type': 0,'type': 10,'type_name': 'text'},{'alias': '','comment': '','expression': '"Conn_No"','length': 8,'name': 'Conn_No','precision': 0,'sub_type': 0,'type': 2,'type_name': 'integer'},{'alias': '','comment': '','expression': '"Width_or_D"','length': 15,'name': 'Width_or_D','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': '"Height_or_"','length': 15,'name': 'Height_or_','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': '"Number_of"','length': 8,'name': 'Number_of','precision': 0,'sub_type': 0,'type': 2,'type_name': 'integer'},{'alias': '','comment': '','expression': '"HConF_or_W"','length': 15,'name': 'HConF_or_W','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': '"WConF_or_W"','length': 15,'name': 'WConF_or_W','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': '"EntryC_or_"','length': 15,'name': 'EntryC_or_','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': '"ExitC_or_W"','length': 15,'name': 'ExitC_or_W','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'}],
+            'FIELDS_MAPPING': [{'alias': '','comment': '','expression': 'GEN_ID','length': 36,'name': 'ID','precision': 0,'sub_type': 0,'type': 10,'type_name': 'text'},{'alias': '','comment': '','expression': "'C'",'length': 4,'name': 'Type','precision': 0,'sub_type': 0,'type': 10,'type_name': 'text'},{'alias': '','comment': '','expression': '"Ignore"','length': 1,'name': 'Ignore','precision': 0,'sub_type': 0,'type': 10,'type_name': 'text'},{'alias': '','comment': '','expression': '"UCS"','length': 1,'name': 'UCS','precision': 0,'sub_type': 0,'type': 10,'type_name': 'text'},{'alias': '','comment': '','expression': '$length','length': 15,'name': 'Len_or_ANA','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': '"n_nF_Cd"','length': 15,'name': 'n_nF_Cd','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': "raster_value('DEM', 1, start_point($geometry))",'length': 15,'name': 'US_Invert','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': "raster_value('DEM', 1, end_point($geometry))",'length': 15,'name': 'DS_Invert','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': '"Form_Loss"','length': 15,'name': 'Form_Loss','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': '"pBlockage"','length': 15,'name': 'pBlockage','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': '"Inlet_Type"','length': 50,'name': 'Inlet_Type','precision': 0,'sub_type': 0,'type': 10,'type_name': 'text'},{'alias': '','comment': '','expression': '"Conn_1D_2D"','length': 4,'name': 'Conn_1D_2D','precision': 0,'sub_type': 0,'type': 10,'type_name': 'text'},{'alias': '','comment': '','expression': '"Conn_No"','length': 8,'name': 'Conn_No','precision': 0,'sub_type': 0,'type': 2,'type_name': 'integer'},{'alias': '','comment': '','expression': '"Width_or_D"','length': 15,'name': 'Width_or_D','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': '"Height_or_"','length': 15,'name': 'Height_or_','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': '"Number_of"','length': 8,'name': 'Number_of','precision': 0,'sub_type': 0,'type': 2,'type_name': 'integer'},{'alias': '','comment': '','expression': '"HConF_or_W"','length': 15,'name': 'HConF_or_W','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': '"WConF_or_W"','length': 15,'name': 'WConF_or_W','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': '"EntryC_or_"','length': 15,'name': 'EntryC_or_','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': '"ExitC_or_W"','length': 15,'name': 'ExitC_or_W','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'}],
             'INPUT': outputs['GeometryByExpression']['OUTPUT'],
-            'OUTPUT': os.path.join(folders['culvert'],'1d_nwk.shp') #edit - make this dynamic (os.path join etc.)
+            'OUTPUT': os.path.join(folders['culvert'],'1d_nwk.shp')
         }
         outputs['RefactorFields'] = processing.run('native:refactorfields', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
         results['RefactorFields'] = outputs['RefactorFields']['OUTPUT']
        
+        print("✅ Refactor fields complete")
+
         ## Add to QGIS project for visualisation ## EDIT - can remove this later...
         # QgsProject.instance().addMapLayer(QgsVectorLayer(outputs['RefactorFields']['OUTPUT'], "1d_nwk", "ogr"))
 
@@ -756,8 +772,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         ## Refer Design flood estimation in Western Australia by David Flavell, 2012
 
 
-        selected_runoff_method = self.parameterAsEnum(parameters, 'chosen_rainfall_analysis', context)
-        ## options=['Flavels RFFP2000 (Pilbara)' = 0,'Rational (basic, global)' = 1]
+        selected_runoff_method = self.parameterAsEnum(parameters, 'chosen_rainfall_analysis', context)  ## options=['Flavels RFFP2000 (Pilbara)' = 0,'Rational (basic, global)' = 1]
 
         if selected_runoff_method == 0:
             feedback.pushInfo(f'🌧️ Runoff method selected: Flavels RFFP2000 (Pilbara)')
@@ -778,8 +793,6 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
             catchment_QGIS = QgsVectorLayer(catchment_filepath, "catchment", "ogr")
             flowpath_QGIS = QgsVectorLayer(longest_flowpath_filepath, "flowpath", "ogr")
 
-            #for f in catchment_QGIS.getFeatures():
-
             catchment_feature = next(catchment_QGIS.getFeatures(), None)
             catchment_geometry = QgsGeometry(catchment_feature.geometry())
             
@@ -787,7 +800,6 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
             print(f'🗺️  Area for {_id} is {area} km2')            
 
             centroid = catchment_geometry.centroid().asPoint()
-
 
             transform_object = QgsCoordinateTransform(catchment_QGIS.sourceCrs(), QgsCoordinateReferenceSystem('EPSG:4326'), QgsProject.instance())         #this is a QgsCoordinateTransform object that has a transform method
 
@@ -937,7 +949,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
 
 
 
-          
+        results['catchments_output'] = folders['catchments']
 
         return results
 
