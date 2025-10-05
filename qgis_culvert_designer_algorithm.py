@@ -42,6 +42,7 @@ from pcraster import *
 from qgis.PyQt.QtCore import QCoreApplication
 from qgis.core import (QgsProcessing,
                        QgsVectorLayer,
+                       QgsRasterLayer,
                        QgsFeatureSink,
                        QgsProcessingAlgorithm,
                        QgsProcessingMultiStepFeedback,
@@ -49,6 +50,7 @@ from qgis.core import (QgsProcessing,
                        QgsProcessingParameterFeatureSink,
                        QgsProcessingParameterFileDestination,
                        QgsProcessingParameterFile,
+                       QgsProcessingParameterFolderDestination,
                        QgsProcessingParameterRasterLayer,
                        QgsProcessingParameterRasterDestination,
                        QgsProcessingParameterNumber,
@@ -168,24 +170,25 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         )
 
         param = QgsProcessingParameterFile(
-            'output_strahlermap', 
-            'output_strahler.map', 
-            optional=True, 
-            behavior=QgsProcessingParameterFile.File, 
-            fileFilter='Flow Direction File (*.map)', 
-            defaultValue='/Users/blakehillwood/Desktop/Testing/Backup/tuflow test/output_strahler.map'
-        ) ##EDIT -- replace defailt with None
+                'output_strahlermap', 
+                'output_strahler.map', 
+                optional=True, 
+                behavior=QgsProcessingParameterFile.File, 
+                fileFilter='Flow Direction File (*.map)', 
+                defaultValue='/Users/blakehillwood/Desktop/Testing/Backup/tuflow test/output_strahler.map'
+            ) ##EDIT -- replace defailt with None
         param.setFlags(param.flags() | QgsProcessingParameterDefinition.FlagAdvanced)
         self.addParameter(param)
 
 
         ## OUTPUTS
-        self.addParameter(
-            QgsProcessingParameterFileDestination(
+        param2 = QgsProcessingParameterFolderDestination(
                 'catchments_output',
                 'Catchments Folder'
             )
-        )
+        param2.setFlags(param.flags() | QgsProcessingParameterDefinition.FlagHidden)
+        self.addParameter(param2)
+            
 
 
     def initialiseFolders(self, parameters, context, feedback):
@@ -214,6 +217,23 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         return folders
 
 
+    def calc_equal_area_slope(self, line_layer_path, dem_path, csv_filepath=None):
+        """
+        This function imports a publically available processing alogirithm to calculate equal area slope and return the float value
+        """
+
+        from Equal_area_slope_QGIS_Plugin.EA_Slope import EA_Slope
+        eas = EA_Slope(None)
+        vlayer = QgsVectorLayer(line_layer_path, "stream_path", "ogr") #convert filepath into a QGIS layer
+        rlayer = QgsRasterLayer(dem_path, "dem") #convert filepath into a QGIS layer
+        
+        ## Doesn't return anything - creates a file in memory and a csv file
+        eas.main(vlayer, rlayer, csv_filepath) 
+
+        # layer_with_EAS = QgsProject.instance().mapLayersByName("duplicated_layer")[0]
+
+        
+
 
     def processAlgorithm(self, parameters, context, feedback):
         """
@@ -225,10 +245,13 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         self.total_steps = 100 # use for updating status bar
         self.step_counter = 0 # use for updating status bar
         feedback = QgsProcessingMultiStepFeedback(self.total_steps, feedback)
+        
         results = {}
         outputs = {}
 
         folders = self.initialiseFolders(parameters, context, feedback)
+
+        parameters['catchments_output'] = folders['catchments'] #use this to open all the catchment files on completion
 
         input_dem_layer = self.parameterAsRasterLayer(parameters, 'Dem', context)
         input_dem_layer.setName("DEM") #use to reference the DEM in raster expressions
@@ -707,6 +730,9 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
 
         # Create catchment polygons
 
+        catchment_filepaths = []
+        flowpath_filepaths = []
+
         for i, feat in enumerate(snapped.getFeatures()):
 
             value = int(feat['ID'])
@@ -717,6 +743,8 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
             self.updateProgress(feedback)
         
             self.wbt.longest_flowpath( output_dem, os.path.join(folders['catchments'],f"catchment_{value}.tif"), os.path.join(folders['stream_paths'],f"longest_flowpath_{value}.shp") )
+
+            self.calc_equal_area_slope(os.path.join(folders['stream_paths'],f"longest_flowpath_{value}.shp"), output_dem, os.path.join(folders['stream_paths'],f"longest_flowpath_{value}.csv"))
 
             # Polygonize - convert the raster layer from whitebox into a vector.
             alg_params = {
@@ -735,21 +763,24 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
                 'REMOVE_EMPTY': True,
                 'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
             }
-            outputs['RemoveNullGeometries'] = processing.run('native:removenullgeometries', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+            outputs[f'RemoveNullGeometries_{value}'] = processing.run('native:removenullgeometries', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
             
 
             # Dissolve - use this to combine any features that might have been disjointed
             alg_params = {
                 'FIELD': [''],
-                'INPUT': outputs['RemoveNullGeometries']['OUTPUT'],
+                'INPUT': outputs[f'RemoveNullGeometries_{value}']['OUTPUT'],
                 'SEPARATE_DISJOINT': False,
                 'OUTPUT': os.path.join(folders['catchments'],f"catchment_{value}.shp")
             }
-            outputs['Dissolve'] = processing.run('native:dissolve', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
-            results[f"catchment_{value}"] = outputs['Dissolve']['OUTPUT']
+            outputs[f'Dissolve_{value}'] = processing.run('native:dissolve', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+            results[f"catchment_{value}"] = outputs[f'Dissolve_{value}']['OUTPUT']
             results[f"longest_flowpath_{value}"] = os.path.join(folders['stream_paths'],f"longest_flowpath_{value}.shp")
 
             ## Add to QGIS Canvas
+            catchment_filepaths.append(outputs[f'Dissolve_{value}']['OUTPUT'])
+            flowpath_filepaths.append(os.path.join(folders['stream_paths'],f"longest_flowpath_{value}.shp"))
+
             # QgsProject.instance().addMapLayer(QgsVectorLayer(outputs['Dissolve']['OUTPUT'], f"catchment_{value}", "ogr"))
             # QgsProject.instance().addMapLayer(QgsVectorLayer(os.path.join(folders['stream_paths'],f"longest_flowpath_{value}.shp"), f"longest_flowpath_{value}", "ogr"))
 
@@ -942,10 +973,19 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         culverts.commitChanges()
 
 
-
         if feedback.isCanceled():
             return {}
         self.updateProgress(feedback)
+
+
+        ## VISUALISATION IN CANVAS
+        for filepath in catchment_filepaths + flowpath_filepaths:
+            QgsProject.instance().addMapLayer(QgsVectorLayer(filepath, os.path.basename(filepath), "ogr"))
+
+        for filepath in flowpath_filepaths:
+            QgsProject.instance().addMapLayer(QgsVectorLayer(filepath, os.path.basename(filepath), "ogr"))
+
+
 
 
 
