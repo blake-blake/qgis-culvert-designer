@@ -35,11 +35,14 @@ import os
 import inspect
 import subprocess
 import math
+import csv
 from qgis.PyQt.QtGui import QIcon
 from qgis.utils import iface
 from pcraster import *
+import processing
+from whitebox import WhiteboxTools
 
-from qgis.PyQt.QtCore import QCoreApplication
+from qgis.PyQt.QtCore import (QCoreApplication, QVariant)
 from qgis.core import (QgsProcessing,
                        QgsVectorLayer,
                        QgsRasterLayer,
@@ -59,34 +62,11 @@ from qgis.core import (QgsProcessing,
                        QgsCoordinateTransform,
                        QgsProject,
                        QgsProcessingParameterDefinition,
-                       QgsProcessingParameterEnum)
-import processing
+                       QgsProcessingParameterEnum,
+                       QgsField,
+                       edit)
 
-# import geopandas as gpd
-# import rasterio
-# from rasterio.mask import mask
-# import pandas as pd
-# from shapely.geometry import mapping
-from whitebox import WhiteboxTools
 
-# # edit later - delete this class
-# class PourPoint:
-#     """
-#     This is a class to contain all the information
-#     related to one drainage outlet point.
-
-#     """
-#     def __init__(self, name):
-#         self.name = name
-
-#     def set_pour_point(self, pour_point_path):
-#         self.pour_point_path = pour_point_path
-
-# # edit later - divide up functions into this culvert class
-# class Culvert:
-#     def __init__(self):
-
-#     def
 
 
 class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
@@ -217,12 +197,12 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         return folders
 
 
-    def calc_equal_area_slope(self, line_layer_path, dem_path, csv_filepath=None):
+    def add_equal_area_slope(self, line_layer_path, dem_path, csv_filepath):
         """
         This function imports a publically available processing alogirithm to calculate equal area slope and return the float value
         """
-
         from Equal_area_slope_QGIS_Plugin.EA_Slope import EA_Slope
+
         eas = EA_Slope(None)
         vlayer = QgsVectorLayer(line_layer_path, "stream_path", "ogr") #convert filepath into a QGIS layer
         rlayer = QgsRasterLayer(dem_path, "dem") #convert filepath into a QGIS layer
@@ -230,9 +210,27 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         ## Doesn't return anything - creates a file in memory and a csv file
         eas.main(vlayer, rlayer, csv_filepath) 
 
-        # layer_with_EAS = QgsProject.instance().mapLayersByName("duplicated_layer")[0]
+
+        with open(csv_filepath, 'r') as file:
+            reader = csv.DictReader(file)
+            ea_slope = float(next(reader)['EAS'])
+
+
+        # Assign ea_slope to an EAS attribute in the longest flowpath shapefile
+
+        vlayer.startEditing()
+
+        vlayer.dataProvider().addAttributes([QgsField('EAS', QVariant.Double)])
+        vlayer.updateFields()
+        feat = next(vlayer.getFeatures())
+        feat['EAS'] = ea_slope
+        vlayer.updateFeature(feat)
+
+        vlayer.commitChanges()
 
         
+
+
 
 
     def processAlgorithm(self, parameters, context, feedback):
@@ -373,8 +371,6 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         }
         outputs['PolygonizeRasterToVector'] = processing.run('gdal:polygonize', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
 
-        ## Add to QGIS project for visualisation ## EDIT - can remove this later...
-        # QgsProject.instance().addMapLayer(QgsVectorLayer(outputs['PolygonizeRasterToVector']['OUTPUT'], "Polygonized_StreamPath", "ogr"))
         results['Polygonized_StreamPath'] = outputs['PolygonizeRasterToVector']['OUTPUT']
 
         if feedback.isCanceled():
@@ -384,7 +380,6 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         # Intersection - this finds the overlap of the road string with the stream path polygon.
         alg_params = {
             'GRID_SIZE': None,
-            # 'INPUT': parameters['RoadAlignment'],
             'INPUT': self.parameterAsVectorLayer(parameters, 'RoadAlignment', context),
             'INPUT_FIELDS': [''],
             'OVERLAY': outputs['PolygonizeRasterToVector']['OUTPUT'],
@@ -395,8 +390,6 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         }
         outputs['Intersection'] = processing.run('native:intersection', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
 
-        ## Add to QGIS project for visualisation ## EDIT - can remove this later...
-        # QgsProject.instance().addMapLayer(QgsVectorLayer(outputs['Intersection']['OUTPUT'], "Intersection_road_with_stream", "ogr"))
         results['Intersection']=outputs['Intersection']['OUTPUT']
 
         if feedback.isCanceled():
@@ -411,10 +404,6 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         }
         outputs['Centroids'] = processing.run('native:centroids', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
         results['CntrPointsOfLine'] = outputs['Centroids']['OUTPUT']
-
-        ## Add to QGIS project for visualisation ## EDIT - can remove this later...
-        # QgsProject.instance().addMapLayer(QgsVectorLayer(outputs['Centroids']['OUTPUT'], "Centroids_of_intersections", "ogr"))
-
 
         if feedback.isCanceled():
             return {}
@@ -572,11 +561,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
        
         print("✅ Refactor fields complete")
 
-        ## Add to QGIS project for visualisation ## EDIT - can remove this later...
-        # QgsProject.instance().addMapLayer(QgsVectorLayer(outputs['RefactorFields']['OUTPUT'], "1d_nwk", "ogr"))
-
         ## Etract in the inlet ends to use as pour points
-
         pourpoints_filepath = os.path.join(folders['pcraster'], 'pour_points.col')
     
 
@@ -681,7 +666,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         output_dem = os.path.join(folders['whitebox'],"filled_dem.tif") 
         output_flowdir = os.path.join(folders['whitebox'],"flow_dir.tif") 
         output_flowacc = os.path.join(folders['whitebox'],"flow_acc.tif") 
-        output_snapped_pour_points = os.path.join(folders['pour_points'],"snapped.shp") # edit -- need to create this file in case it hasn't already been created.
+        output_snapped_pour_points = os.path.join(folders['pour_points'],"snapped.shp") 
 
         self.wbt.fill_depressions(input_dem, output_dem)
 
@@ -732,19 +717,34 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
 
         catchment_filepaths = []
         flowpath_filepaths = []
+        processed_ids = []
 
         for i, feat in enumerate(snapped.getFeatures()):
 
             value = int(feat['ID'])
-            self.wbt.watershed(output_flowdir, os.path.join(folders['pour_points'],f"ID_{value}.shp"), os.path.join(folders['catchments'],f"catchment_{value}.tif") )
+            processed_ids.append(value)
+            self.wbt.watershed(
+                output_flowdir,
+                os.path.join(folders['pour_points'],f"ID_{value}.shp"),
+                os.path.join(folders['catchments'],f"catchment_{value}.tif")
+            )
             
             if feedback.isCanceled():
                 return {}
             self.updateProgress(feedback)
         
-            self.wbt.longest_flowpath( output_dem, os.path.join(folders['catchments'],f"catchment_{value}.tif"), os.path.join(folders['stream_paths'],f"longest_flowpath_{value}.shp") )
+            self.wbt.longest_flowpath(
+                output_dem,
+                os.path.join(folders['catchments'],f"catchment_{value}.tif"),
+                os.path.join(folders['stream_paths'],f"longest_flowpath_{value}.shp")
+            )
 
-            self.calc_equal_area_slope(os.path.join(folders['stream_paths'],f"longest_flowpath_{value}.shp"), output_dem, os.path.join(folders['stream_paths'],f"longest_flowpath_{value}.csv"))
+            self.add_equal_area_slope(
+                os.path.join(folders['stream_paths'], f"longest_flowpath_{value}.shp"),
+                output_dem,
+                os.path.join(folders['stream_paths'], f"longest_flowpath_{value}.csv")
+            )
+
 
             # Polygonize - convert the raster layer from whitebox into a vector.
             alg_params = {
@@ -777,12 +777,9 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
             results[f"catchment_{value}"] = outputs[f'Dissolve_{value}']['OUTPUT']
             results[f"longest_flowpath_{value}"] = os.path.join(folders['stream_paths'],f"longest_flowpath_{value}.shp")
 
-            ## Add to QGIS Canvas
+            ## Add to QGIS arrays for loading in canvas later
             catchment_filepaths.append(outputs[f'Dissolve_{value}']['OUTPUT'])
             flowpath_filepaths.append(os.path.join(folders['stream_paths'],f"longest_flowpath_{value}.shp"))
-
-            # QgsProject.instance().addMapLayer(QgsVectorLayer(outputs['Dissolve']['OUTPUT'], f"catchment_{value}", "ogr"))
-            # QgsProject.instance().addMapLayer(QgsVectorLayer(os.path.join(folders['stream_paths'],f"longest_flowpath_{value}.shp"), f"longest_flowpath_{value}", "ogr"))
 
             number_of_features = i 
         
@@ -810,25 +807,21 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         else:
             feedback.pushInfo(f'🌧️ Runoff method selected: Rational (basic, global)')
 
-
-
-        _id_array = [0, 1, 2] # Edit - make loop dynamic
         flow_rates_by_id = {} # store calculated flow rates in a dictionary
       
-        for _id in _id_array:
+        for value in processed_ids:
             if feedback.isCanceled():
                 return {}
-            catchment_filepath = os.path.join(folders['catchments'],f"catchment_{_id}.shp")
-            longest_flowpath_filepath = os.path.join(folders['stream_paths'],f"longest_flowpath_{_id}.shp")
+            catchment_filepath = os.path.join(folders['catchments'],f"catchment_{value}.shp")
+            longest_flowpath_filepath = os.path.join(folders['stream_paths'],f"longest_flowpath_{value}.shp")
 
             catchment_QGIS = QgsVectorLayer(catchment_filepath, "catchment", "ogr")
-            flowpath_QGIS = QgsVectorLayer(longest_flowpath_filepath, "flowpath", "ogr")
 
             catchment_feature = next(catchment_QGIS.getFeatures(), None)
             catchment_geometry = QgsGeometry(catchment_feature.geometry())
             
             area = catchment_geometry.area()/1_000_000 # convert m2 to km2
-            print(f'🗺️  Area for {_id} is {area} km2')            
+            print(f'🗺️  Area for {value} is {area} km2')            
 
             centroid = catchment_geometry.centroid().asPoint()
 
@@ -845,10 +838,14 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
             longitude = 119
             latitude = 23
 
-            print(f'📍 Coordinates for {_id} is LAT: {latitude} degrees, LONG: {longitude} degrees')
+            print(f'📍 Coordinates for {value} is LAT: {latitude} degrees, LONG: {longitude} degrees')
 
-            flowpath_feature = next(flowpath_QGIS.getFeatures(),None)
-            flowpath_slope = flowpath_feature['AVG_SLOPE'] * 10 # convert percent grade (1/100) to m/km (1/1000)
+            flowpath_QGIS = QgsVectorLayer(longest_flowpath_filepath, "flowpath", "ogr")
+            flowpath_feature = next(flowpath_QGIS.getFeatures())
+            field_names = [f.name() for f in flowpath_feature.fields()]
+            feedback.pushInfo(f"🌾 Fields found: {field_names}")
+
+            flowpath_slope = flowpath_feature['EAS'] * 10 # convert percent grade (1/100) to m/km (1/1000)
             flowpath_length = flowpath_feature['LENGTH']/1000 # convert m to km
 
             print(f'🦦 Flow path length: {flowpath_length} km, Flow path slope: {flowpath_slope} m/km')
@@ -861,8 +858,8 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
                     (flowpath_length**2 / area)**-0.39
                 )
 
-            flow_rates_by_id[int(_id)] = Q_10
-            print(f'💧 Flowrate for {_id} is {Q_10}\n')
+            flow_rates_by_id[int(value)] = Q_10
+            print(f'💧 Flowrate for {value} is {Q_10}\n')
 
             self.updateProgress(feedback)
 
@@ -877,10 +874,10 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
 
         culverts.startEditing() # unlock the culvert shapefile to update the diameter
 
-        for _id in _id_array:
+        for value in processed_ids:
             if feedback.isCanceled():
                 return {}
-            Q = flow_rates_by_id[int(_id)]
+            Q = flow_rates_by_id[int(value)]
             D_array = [0.6,0.9,1.2,1.8,2.4,3.2] # standard culvert dia options
 
             ## --- For inlet control --- #
@@ -901,7 +898,12 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
             g = 9.81 # gravity
 
             L = 10 # (m) length of pipe -- edit - make this dynamic
-            Ls = 0.1 # (m) Drop in height from inlet to outlet -- edit -- make this dynamic based on culvert slope
+
+            for culvert in culverts.getFeatures(f"ID={value}"): #filter by 'ID'
+                L = culvert['Len_or_ANA']
+                us_invert = culvert['US_Invert']
+                ds_invert = culvert['DS_Invert']
+                Ls = us_invert - ds_invert # (m) Drop in height from inlet to outlet
             
 
             Hw_ratio_max = 0 
@@ -919,7 +921,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
 
                 Hw_ic = (a + b*QBD + c*QBD**2 + d*QBD**3 + e*QBD**4 + f*QBD**5 )*D
 
-                print(f'🌊 Inlet control headwater ratio for {_id} with a {D}m dia. barrel is {Hw_ic/D}')
+                print(f'🌊 Inlet control headwater ratio for {value} with a {D}m dia. barrel is {Hw_ic/D}')
 
 
 
@@ -942,7 +944,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
 
                 Hw_oc = Tw + Hl - Ls # Equation 3.6b
 
-                print(f'🌊 Outlet control headwater ratio for {_id} with a {D}m dia. barrel is {Hw_oc/D}')
+                print(f'🌊 Outlet control headwater ratio for {value} with a {D}m dia. barrel is {Hw_oc/D}')
 
                 ## ---- ASSIGNING VALUES ---- ##
 
@@ -964,7 +966,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
 
             print(f'⭕️ Chosen diameter: {Chosen_D}m with headwater ratio of {Hw_ratio_max}\n')
 
-            for culvert in culverts.getFeatures(f"ID={_id}"): #filter by 'ID'
+            for culvert in culverts.getFeatures(f"ID={value}"): #filter by 'ID'
                 culvert['Width_or_D'] = float(Chosen_D)
                 culvert['Number_of'] = int(1) ## EDIT -- update this later for multi barrel configurations
                 culverts.updateFeature(culvert)
