@@ -883,6 +883,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
             ## --- For inlet control --- #
             # For Thin Edge Projecting Inlet - Table 1, HY-8 Equation 1 (HY-8 User Manual / FHWA HDS-5)
             # Inlet type - straight, projecting, circular corrugated metal pipe
+            # All constants for that inlet type
             a = 0.187321 
             b = 0.56771 
             c = -0.156544 
@@ -896,8 +897,6 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
             Ku = 29 # Constant provided by HDS-5
             n = 0.024 # mannings n of corrugated steel pipe
             g = 9.81 # gravity
-
-            L = 10 # (m) length of pipe -- edit - make this dynamic
 
             for culvert in culverts.getFeatures(f"ID={value}"): #filter by 'ID'
                 L = culvert['Len_or_ANA']
@@ -913,6 +912,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
             for D in D_array:
                 if feedback.isCanceled():
                     return {}
+                
                 ## ---- INLET CONTROL CALCULATION ---- ##
                 B = D # in the case of a circular culvert
                 QBD = Q/(B*D**1.5)
@@ -981,13 +981,17 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
 
 
         ## VISUALISATION IN CANVAS
-        for filepath in catchment_filepaths + flowpath_filepaths:
+
+        # ADD CATCHMENTS
+        for filepath in catchment_filepaths:
             QgsProject.instance().addMapLayer(QgsVectorLayer(filepath, os.path.basename(filepath), "ogr"))
 
+        # ADD FLOWPATHS
         for filepath in flowpath_filepaths:
             QgsProject.instance().addMapLayer(QgsVectorLayer(filepath, os.path.basename(filepath), "ogr"))
 
-
+        # ADD CULVERTS
+        QgsProject.instance().addMapLayer(culverts)
 
 
 
