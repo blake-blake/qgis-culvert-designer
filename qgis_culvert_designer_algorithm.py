@@ -30,13 +30,43 @@ __copyright__ = '(C) 2025 by Blake Hillwood'
 
 __revision__ = '$Format:%H$'
 
-from qgis.PyQt.QtCore import QCoreApplication
+import shutil
+import os
+import inspect
+import subprocess
+import math
+import csv
+from qgis.PyQt.QtGui import QIcon
+from qgis.utils import iface
+from pcraster import *
+import processing
+from whitebox import WhiteboxTools
+
+from qgis.PyQt.QtCore import (QCoreApplication, QVariant)
 from qgis.core import (QgsProcessing,
+                       QgsVectorLayer,
+                       QgsRasterLayer,
                        QgsFeatureSink,
                        QgsProcessingAlgorithm,
+                       QgsProcessingMultiStepFeedback,
                        QgsProcessingParameterFeatureSource,
                        QgsProcessingParameterFeatureSink,
-                       QgsProcessingParameterFileDestination)
+                       QgsProcessingParameterFileDestination,
+                       QgsProcessingParameterFile,
+                       QgsProcessingParameterFolderDestination,
+                       QgsProcessingParameterRasterLayer,
+                       QgsProcessingParameterRasterDestination,
+                       QgsProcessingParameterNumber,
+                       QgsCoordinateReferenceSystem,
+                       QgsGeometry,
+                       QgsCoordinateTransform,
+                       QgsProject,
+                       QgsProcessingParameterDefinition,
+                       QgsProcessingParameterEnum,
+                       QgsField,
+                       edit)
+
+
 
 
 class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
@@ -60,67 +90,920 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
     OUTPUT = 'OUTPUT'
     INPUT = 'INPUT'
 
+    wbt = WhiteboxTools()
+
+    def updateProgress(self, feedback):
+        feedback.setCurrentStep(self.step_counter)
+        if feedback.isCanceled():
+            return {}
+        self.step_counter += 1
+
     def initAlgorithm(self, config):
         """
         Here we define the inputs and output of the algorithm, along
         with some other properties.
         """
 
-        # We add the input vector features source. It can have any kind of
-        # geometry.
+        ## INPUTS
+        # We add the input vector features source. It can have any kind of geometry.
+
+        self.addParameter(QgsProcessingParameterEnum('chosen_rainfall_analysis', 'Chosen Rainfall Analysis', options=['Flavels RFFP2000 (Pilbara)','Rational (basic, global)'], allowMultiple=False, usesStaticStrings=False, defaultValue=0))
+
+        self.addParameter(QgsProcessingParameterFile('base_folder', 'Base Folder', behavior=QgsProcessingParameterFile.Folder, fileFilter='All files (*.*)', defaultValue=None))
+
+
         self.addParameter(
             QgsProcessingParameterFeatureSource(
-                self.INPUT,
-                self.tr('Input layer'),
+                'RoadAlignment',
+                self.tr('Road alignment'),
                 [QgsProcessing.TypeVectorAnyGeometry]
             )
         )
 
-        # We add a feature sink in which to store our processed features (this
-        # usually takes the form of a newly created vector layer when the
-        # algorithm is run in QGIS).
+        # This is the RASTER input
         self.addParameter(
-            QgsProcessingParameterFeatureSink(
-                self.OUTPUT,
-                self.tr('Output layer')
+            QgsProcessingParameterRasterLayer(
+                'Dem',
+                'Data Elevation Model',
+                defaultValue=None
             )
         )
+
+        self.addParameter(
+            QgsProcessingParameterNumber(
+                'ThresholdOrder',
+                self.tr('Stream order threshold'),
+                type=QgsProcessingParameterNumber.Integer,
+                defaultValue=8,
+                minValue=1
+            )
+        )
+
+        self.addParameter(
+            QgsProcessingParameterNumber(
+                'RoadWidth',
+                self.tr('Approx. Embankment Width (used for culvert grouping)'),
+                type=QgsProcessingParameterNumber.Integer,
+                defaultValue=50,
+                minValue=1
+            )
+        )
+
+        param = QgsProcessingParameterFile(
+                'output_strahlermap', 
+                'output_strahler.map', 
+                optional=True, 
+                behavior=QgsProcessingParameterFile.File, 
+                fileFilter='Flow Direction File (*.map)', 
+                defaultValue='/Users/blakehillwood/Desktop/Testing/Backup/tuflow test/output_strahler.map'
+            ) ##EDIT -- replace defailt with None
+        param.setFlags(param.flags() | QgsProcessingParameterDefinition.FlagAdvanced)
+        self.addParameter(param)
+
+
+        ## OUTPUTS
+        param2 = QgsProcessingParameterFolderDestination(
+                'catchments_output',
+                'Catchments Folder'
+            )
+        param2.setFlags(param.flags() | QgsProcessingParameterDefinition.FlagHidden)
+        self.addParameter(param2)
+            
+
+
+    def initialiseFolders(self, parameters, context, feedback):
+        base_folder = self.parameterAsFile(parameters, 'base_folder', context)
+
+        if not os.path.exists(base_folder):
+            os.makedirs(base_folder)
+
+        folders = {
+            "base": base_folder,
+            "whitebox": os.path.join(base_folder, "Whitebox"),
+            "catchments": os.path.join(base_folder, "Whitebox/Catchments"),
+            "pour_points": os.path.join(base_folder, "Whitebox/PourPoints"),
+            "stream_paths": os.path.join(base_folder, "Whitebox/StreamPaths"),
+            "pcraster": os.path.join(base_folder, "PCRaster"),
+            "qgis": os.path.join(base_folder, "QGISIntermediates"),
+            "lddcreate": os.path.join(base_folder, "PCRaster/Lddcreate"),
+            "strahler": os.path.join(base_folder, "PCRaster/StrahlerOrders"),
+            "culvert": os.path.join(base_folder, "CulvertNetwork")
+        }
+
+
+        for folder in folders.values():
+            os.makedirs(folder, exist_ok=True)
+
+        return folders
+
+
+    def add_equal_area_slope(self, line_layer_path, dem_path, csv_filepath):
+        """
+        This function imports a publically available processing alogirithm to calculate equal area slope and return the float value
+        """
+        from Equal_area_slope_QGIS_Plugin.EA_Slope import EA_Slope
+
+        eas = EA_Slope(None)
+        vlayer = QgsVectorLayer(line_layer_path, "stream_path", "ogr") #convert filepath into a QGIS layer
+        rlayer = QgsRasterLayer(dem_path, "dem") #convert filepath into a QGIS layer
+        
+        ## Doesn't return anything - creates a file in memory and a csv file
+        eas.main(vlayer, rlayer, csv_filepath) 
+
+
+        with open(csv_filepath, 'r') as file:
+            reader = csv.DictReader(file)
+            ea_slope = float(next(reader)['EAS'])
+
+
+        # Assign ea_slope to an EAS attribute in the longest flowpath shapefile
+
+        vlayer.startEditing()
+
+        vlayer.dataProvider().addAttributes([QgsField('EAS', QVariant.Double)])
+        vlayer.updateFields()
+        feat = next(vlayer.getFeatures())
+        feat['EAS'] = ea_slope
+        vlayer.updateFeature(feat)
+
+        vlayer.commitChanges()
+
+        
+
+
+
 
     def processAlgorithm(self, parameters, context, feedback):
         """
         Here is where the processing itself takes place.
         """
 
-        # Retrieve the feature source and sink. The 'dest_id' variable is used
-        # to uniquely identify the feature sink, and must be included in the
-        # dictionary returned by the processAlgorithm function.
-        source = self.parameterAsSource(parameters, self.INPUT, context)
-        (sink, dest_id) = self.parameterAsSink(parameters, self.OUTPUT,
-                context, source.fields(), source.wkbType(), source.sourceCrs())
+        # # Use a multi-step feedback, so that individual child algorithm progress reports are adjusted for the
+        # # overall progress through the model
+        self.total_steps = 100 # use for updating status bar
+        self.step_counter = 0 # use for updating status bar
+        feedback = QgsProcessingMultiStepFeedback(self.total_steps, feedback)
+        
+        results = {}
+        outputs = {}
 
-        # Compute the number of steps to display within the progress bar and
-        # get features from source
-        total = 100.0 / source.featureCount() if source.featureCount() else 0
-        features = source.getFeatures()
+        folders = self.initialiseFolders(parameters, context, feedback)
 
-        for current, feature in enumerate(features):
-            # Stop the algorithm if cancel button has been clicked
+        parameters['catchments_output'] = folders['catchments'] #use this to open all the catchment files on completion
+
+        input_dem_layer = self.parameterAsRasterLayer(parameters, 'Dem', context)
+        input_dem_layer.setName("DEM") #use to reference the DEM in raster expressions
+        dem_crs = input_dem_layer.crs()
+        QgsProject.instance().addMapLayer(input_dem_layer)
+
+
+        road_layer = self.parameterAsVectorLayer(parameters, 'RoadAlignment', context)
+        if road_layer.crs() != dem_crs:
+           # Reproject layer
+            alg_params = {
+                'CONVERT_CURVED_GEOMETRIES': False,
+                'INPUT': road_layer,
+                'OPERATION': '',
+                'TARGET_CRS': dem_crs,
+                'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+            }
+            outputs['ReprojectLayer'] = processing.run('native:reprojectlayer', alg_params, context=context, feedback=feedback, is_child_algorithm=True) 
+
+        QgsProject.instance().addMapLayer(input_dem_layer)
+        QgsProject.instance().addMapLayer(road_layer)
+
+        # Convert to PCRaster Format
+        alg_params = {
+            'INPUT': input_dem_layer,
+            'INPUT2': 3,  # Scalar
+            'OUTPUT': os.path.join(folders['pcraster'],'pcraster_dem.map')
+        }
+        outputs['ConvertToPcrasterFormat'] = processing.run('pcraster:converttopcrasterformat', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+
+
+        if feedback.isCanceled():
+            return {}
+        self.updateProgress(feedback)
+
+
+        output_strahlermap = self.parameterAsFile(parameters, 'output_strahlermap', context)
+
+        if not output_strahlermap:
+            ## Ldd create is used to calculate the flow path directions
+            ## lddcreate
+
+            alg_params = {
+                'INPUT': outputs['ConvertToPcrasterFormat']['OUTPUT'],
+                'INPUT0': 0,  # No
+                'INPUT1': 0,  # Map units
+                'INPUT2': 9999999,
+                'INPUT3': 9999999,
+                'INPUT4': 9999999,
+                'INPUT5': 9999999,
+                'OUTPUT': os.path.join(folders['lddcreate'], 'output_strahlermap.map')  # create a .map output saved locally
+
+            }
+            outputs['Lddcreate'] = processing.run('pcraster:lddcreate', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+        else:
+            ## Use this to copy and load an existing file
+            new_path = os.path.join(folders['lddcreate'], 'output_strahlermap.map')
+            shutil.copy(output_strahlermap, new_path) # EDIT -- make this robust to if the file selected is already here.
+            outputs['Lddcreate'] = {'OUTPUT': new_path} # uses the original specified file
+
+
+        if feedback.isCanceled():
+            return {}
+        self.updateProgress(feedback)
+
+
+        # streamorder
+        alg_params = {
+            'INPUT': outputs['Lddcreate']['OUTPUT'],
+            'OUTPUT': os.path.join(folders['pcraster'], 'streamorder.map')
+        }
+        outputs['Streamorder'] = processing.run('pcraster:streamorder', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+        results['StreamOrder'] = outputs['Streamorder']['OUTPUT']
+
+
+        # creating multiple streamorder rasters and save
+        setclone(outputs['Streamorder']['OUTPUT'])
+        cellSize = float(celllength())
+        print(f'Cell size check: {cellSize}')
+
+        StrahlerOrder = readmap(outputs['Streamorder']['OUTPUT'])        
+
+        MaxStrahlerOrder = mapmaximum(StrahlerOrder) #creates a raster of the maximum value
+        MaxStrahlerOrderTuple = cellvalue(MaxStrahlerOrder,0,0) #grab a value from a position in a Raster
+        MaxStrahlerOrderValue = MaxStrahlerOrderTuple[0] # grab first element
+
+        if feedback.isCanceled():
+            return {}
+
+
+        # Filter and seperate out strahler order maps
+        for order in range(1, MaxStrahlerOrderValue + 1):
+            Stream = ifthen(StrahlerOrder >= order, boolean (1)) #filter out each stream order from 1 to the maximum stream order
+            report(Stream, os.path.join(folders['strahler'], 'stream'+str(order)+'.map')) # save to file 
             if feedback.isCanceled():
-                break
+                return {}
 
-            # Add a feature in the sink
-            sink.addFeature(feature, QgsFeatureSink.FastInsert)
+        self.updateProgress(feedback)
 
-            # Update the progress bar
-            feedback.setProgress(int(current * total))
+        # User provided stream order threshold
+        ThresholdOrder =  parameters['ThresholdOrder']
 
-        # Return the results of the algorithm. In this case our only result is
-        # the feature sink which contains the processed features, but some
-        # algorithms may return multiple feature sinks, calculated numeric
-        # statistics, etc. These should all be included in the returned
-        # dictionary, with keys matching the feature corresponding parameter
-        # or output names.
-        return {self.OUTPUT: dest_id}
+        if ThresholdOrder > MaxStrahlerOrder:
+            ThresholdOrder = MaxStrahlerOrderValue
+            feedback.pushInfo(f'Chosen threshold was above maximum, using maximum of {MaxStrahlerOrderValue} instead.')
+
+        chosen_stream_path = os.path.join(folders['strahler'],'stream'+str(ThresholdOrder)+'.map')
+        
+        results['strahler'] = chosen_stream_path
+        
+        # Polygonize (raster to vector) - convert the chosen stream path into a polygon so we can calculate intersections
+        alg_params = {
+            'BAND': 1,
+            'EIGHT_CONNECTEDNESS': False,
+            'EXTRA': None,
+            'FIELD': 'DN',
+            'INPUT': chosen_stream_path,
+            'OUTPUT': os.path.join(folders['qgis'], 'Polygonized_StreamPath.shp')
+        }
+        outputs['PolygonizeRasterToVector'] = processing.run('gdal:polygonize', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+
+        results['Polygonized_StreamPath'] = outputs['PolygonizeRasterToVector']['OUTPUT']
+
+        if feedback.isCanceled():
+            return {}
+        self.updateProgress(feedback)
+
+        # Intersection - this finds the overlap of the road string with the stream path polygon.
+        alg_params = {
+            'GRID_SIZE': None,
+            'INPUT': self.parameterAsVectorLayer(parameters, 'RoadAlignment', context),
+            'INPUT_FIELDS': [''],
+            'OVERLAY': outputs['PolygonizeRasterToVector']['OUTPUT'],
+            'OVERLAY_FIELDS': [''],
+            'OVERLAY_FIELDS_PREFIX': None,
+            'OUTPUT': os.path.join(folders['qgis'], 'intersections.shp')
+
+        }
+        outputs['Intersection'] = processing.run('native:intersection', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+
+        results['Intersection']=outputs['Intersection']['OUTPUT']
+
+        if feedback.isCanceled():
+            return {}
+        self.updateProgress(feedback)
+
+        # Centroids - since the intersection creates a line type, we want to find the centroid of the line to make our pour point.
+        alg_params = {
+            'ALL_PARTS': False,
+            'INPUT': outputs['Intersection']['OUTPUT'],
+            'OUTPUT': os.path.join(folders['qgis'],'centroids.shp')
+        }
+        outputs['Centroids'] = processing.run('native:centroids', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+        results['CntrPointsOfLine'] = outputs['Centroids']['OUTPUT']
+
+        if feedback.isCanceled():
+            return {}
+        self.updateProgress(feedback)
+
+
+        ## Due the the polygon intersection, sometimes two intersections are created when the road string passes on an angle
+        ## Therefore, we need to merge any points that are in a practical sense 'next to each other'
+        ## This is done by creating a buffer, joining the buffer and finding the centroid of the new shape.
+        ## This creates a new point in the middle of the previous intersects to approximate a single inlet location.]
+
+        # Buffer
+        alg_params = {
+            'DISSOLVE': False,
+            'DISTANCE': 1,
+            'END_CAP_STYLE': 2,  # Square
+            'INPUT': outputs['Centroids']['OUTPUT'],
+            'JOIN_STYLE': 0,  # Round
+            'MITER_LIMIT': 2,
+            'SEGMENTS': 5,
+            'SEPARATE_DISJOINT': False,
+            'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+        }
+        outputs['Buffer'] = processing.run('native:buffer', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+
+
+        # Dissolve - combine buffer into a single shape
+        alg_params = {
+            'FIELD': [''],
+            'INPUT': outputs['Buffer']['OUTPUT'],
+            'SEPARATE_DISJOINT': True,
+            'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+        }
+        outputs['Dissolve'] = processing.run('native:dissolve', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+
+        # Join attributes by location - assign the dissolved buffers with the information of the points within.
+        alg_params = {
+            'DISCARD_NONMATCHING': False,
+            'INPUT': outputs['Dissolve']['OUTPUT'],
+            'JOIN':  outputs['Centroids']['OUTPUT'],
+            'JOIN_FIELDS': [''],
+            'METHOD': 0,  # Create separate feature for each matching feature (one-to-many)
+            'PREDICATE': [0],  # intersect
+            'PREFIX': None,
+            'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+        }
+        outputs['JoinAttributesByLocation'] = processing.run('native:joinattributesbylocation', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+
+        # Centroids
+        alg_params = {
+            'ALL_PARTS': True,
+            'INPUT': outputs['JoinAttributesByLocation']['OUTPUT'],
+            'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+        }
+        outputs['Centroids'] = processing.run('native:centroids', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+
+        # Delete duplicate geometries
+        alg_params = {
+            'INPUT': outputs['Centroids']['OUTPUT'],
+            'OUTPUT': os.path.join(folders['qgis'],'inlets_and_outlets.shp')
+        }
+        outputs['DeleteDuplicateGeometries'] = processing.run('native:deleteduplicategeometries', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+
+        ## Next we need to associate together inlets and outlets on either side of the road.
+        ## This is done with a buffer - it assumes that inlets and outlets will be closer together at approximately the road width.
+
+        # Buffer2
+        alg_params = {
+            'DISSOLVE': False,
+            'DISTANCE': parameters['RoadWidth']/2 + 1, 
+            'END_CAP_STYLE': 0,  # Round
+            'INPUT': outputs['DeleteDuplicateGeometries']['OUTPUT'],
+            'JOIN_STYLE': 0,  # Round
+            'MITER_LIMIT': 2,
+            'SEGMENTS': 5,
+            'SEPARATE_DISJOINT': False,
+            'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+        }
+        outputs['Buffer2'] = processing.run('native:buffer', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+
+        # Dissolve2
+        alg_params = {
+            'FIELD': [''],
+            'INPUT': outputs['Buffer2']['OUTPUT'],
+            'SEPARATE_DISJOINT': True,
+            'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+        }
+        outputs['Dissolve2'] = processing.run('native:dissolve', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+
+        # Add autoincremental field - used to generate unique IDs for each culvert
+        alg_params = {
+            'FIELD_NAME': 'GEN_ID',
+            'GROUP_FIELDS': [''],
+            'INPUT': outputs['Dissolve2']['OUTPUT'],
+            'MODULUS': 0,
+            'SORT_ASCENDING': True,
+            'SORT_EXPRESSION': None,
+            'SORT_NULLS_FIRST': False,
+            'START': 0,
+            'OUTPUT': os.path.join(folders['qgis'],'incrementedbuffer.shp')
+        }
+        outputs['AddAutoincrementalField'] = processing.run('native:addautoincrementalfield', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+
+        print("✅ Incremented buffer complete")
+
+        # Join attributes by location2 - assign unique ID to inlet & outlet within the same buffer
+        alg_params = {
+            'DISCARD_NONMATCHING': False,
+            'INPUT': outputs['DeleteDuplicateGeometries']['OUTPUT'],
+            'JOIN': outputs['AddAutoincrementalField']['OUTPUT'],
+            'JOIN_FIELDS': ['GEN_ID'],
+            'METHOD': 0,  # Create separate feature for each matching feature (one-to-many)
+            'PREDICATE': [0],  # intersect
+            'PREFIX': None,
+            'OUTPUT': os.path.join(folders['qgis'],'inlets_and_outlets_with_uniqueID.shp')
+        }
+        outputs['JoinAttributesByLocation2'] = processing.run('native:joinattributesbylocation', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+
+        print("✅ Join attributes by location2 complete")
+
+        # Points to path - join inlets & outlets with matching IDs
+        alg_params = {
+            'CLOSE_PATH': False,
+            'GROUP_EXPRESSION': 'GEN_ID',
+            'INPUT': outputs['JoinAttributesByLocation2']['OUTPUT'],
+            'NATURAL_SORT': True,
+            'ORDER_EXPRESSION': None,
+            'OUTPUT': os.path.join(folders['qgis'],'points_to_path.shp')
+        }
+        outputs['PointsToPath'] = processing.run('native:pointstopath', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+
+        print("✅ Points to path complete")
+
+        # Geometry by expression - ensure the culverts are facing downstream
+        alg_params = {
+            'EXPRESSION': "if(raster_value('DEM',1,start_point($geometry))<raster_value('DEM',1,end_point($geometry)), reverse($geometry),$geometry)",
+            'INPUT': outputs['PointsToPath']['OUTPUT'],
+            'OUTPUT_GEOMETRY': 1,  # Line
+            'WITH_M': False,
+            'WITH_Z': True,
+            'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+        }
+        outputs['GeometryByExpression'] = processing.run('native:geometrybyexpression', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+
+        print("✅ Geometry by expression complete")
+    
+        # Refactor fields - this replicates a sample TUFLOW 1d_nwk
+        alg_params = {
+            'FIELDS_MAPPING': [{'alias': '','comment': '','expression': 'GEN_ID','length': 36,'name': 'ID','precision': 0,'sub_type': 0,'type': 10,'type_name': 'text'},{'alias': '','comment': '','expression': "'C'",'length': 4,'name': 'Type','precision': 0,'sub_type': 0,'type': 10,'type_name': 'text'},{'alias': '','comment': '','expression': '"Ignore"','length': 1,'name': 'Ignore','precision': 0,'sub_type': 0,'type': 10,'type_name': 'text'},{'alias': '','comment': '','expression': '"UCS"','length': 1,'name': 'UCS','precision': 0,'sub_type': 0,'type': 10,'type_name': 'text'},{'alias': '','comment': '','expression': '$length','length': 15,'name': 'Len_or_ANA','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': '"n_nF_Cd"','length': 15,'name': 'n_nF_Cd','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': "raster_value('DEM', 1, start_point($geometry))",'length': 15,'name': 'US_Invert','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': "raster_value('DEM', 1, end_point($geometry))",'length': 15,'name': 'DS_Invert','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': '"Form_Loss"','length': 15,'name': 'Form_Loss','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': '"pBlockage"','length': 15,'name': 'pBlockage','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': '"Inlet_Type"','length': 50,'name': 'Inlet_Type','precision': 0,'sub_type': 0,'type': 10,'type_name': 'text'},{'alias': '','comment': '','expression': '"Conn_1D_2D"','length': 4,'name': 'Conn_1D_2D','precision': 0,'sub_type': 0,'type': 10,'type_name': 'text'},{'alias': '','comment': '','expression': '"Conn_No"','length': 8,'name': 'Conn_No','precision': 0,'sub_type': 0,'type': 2,'type_name': 'integer'},{'alias': '','comment': '','expression': '"Width_or_D"','length': 15,'name': 'Width_or_D','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': '"Height_or_"','length': 15,'name': 'Height_or_','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': '"Number_of"','length': 8,'name': 'Number_of','precision': 0,'sub_type': 0,'type': 2,'type_name': 'integer'},{'alias': '','comment': '','expression': '"HConF_or_W"','length': 15,'name': 'HConF_or_W','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': '"WConF_or_W"','length': 15,'name': 'WConF_or_W','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': '"EntryC_or_"','length': 15,'name': 'EntryC_or_','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': '"ExitC_or_W"','length': 15,'name': 'ExitC_or_W','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'}],
+            'INPUT': outputs['GeometryByExpression']['OUTPUT'],
+            'OUTPUT': os.path.join(folders['culvert'],'1d_nwk.shp')
+        }
+        outputs['RefactorFields'] = processing.run('native:refactorfields', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+        results['RefactorFields'] = outputs['RefactorFields']['OUTPUT']
+       
+        print("✅ Refactor fields complete")
+
+        ## Etract in the inlet ends to use as pour points
+        pourpoints_filepath = os.path.join(folders['pcraster'], 'pour_points.col')
+    
+
+        alg_params = {
+            'INPUT': outputs['RefactorFields']['OUTPUT'],
+            'VERTICES': '0',
+            'OUTPUT': os.path.join(folders['qgis'], 'pour_points.shp')
+        }
+        outputs['ExtractSpecificVertices'] = processing.run('native:extractspecificvertices', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+        
+
+        if feedback.isCanceled():
+            return {}
+        self.updateProgress(feedback)
+
+
+
+        ## --- Following takes the culvert inlets and defines the subcatchments ---- #
+
+        culverts = QgsVectorLayer(outputs['RefactorFields']['OUTPUT'], "1d_nwk", "ogr")
+
+        with open(pourpoints_filepath, 'w') as f:
+            for feat in culverts.getFeatures():
+                geom = feat.geometry()
+                line = geom.asMultiPolyline()[0]
+                # x = geom.asPoint().x()
+                x = line[0].x()
+                # y = geom.asPoint().y()
+                y = line[0].y()
+                value = 1 # create a boolean (could be a unique ID later ?? maybe not, was giving errors)
+                # value = feat['ID'] # gives errors....
+                f.write(f"{x} {y} {value}\n")
+
+                if feedback.isCanceled():
+                    return {}
+
+       
+
+        if feedback.isCanceled():
+            return {}
+        self.updateProgress(feedback)
+
+        ## Convert centroids col file to .map
+
+        # Column file to PCRaster Map
+        alg_params = {
+            'INPUT': pourpoints_filepath,
+            'INPUT1': outputs['ConvertToPcrasterFormat']['OUTPUT'],
+            'INPUT2': 0,  # Boolean
+            'OUTPUT': os.path.join(folders['pcraster'],'col2map.map')
+        }
+        outputs['ColumnFileToPcrasterMap'] = processing.run('pcraster:col2map', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+
+        if feedback.isCanceled():
+            return {}
+        self.updateProgress(feedback)
+
+        # Subcatchments to points
+        setclone(outputs['ConvertToPcrasterFormat']['OUTPUT'])
+        ldd = readmap(outputs['Lddcreate']['OUTPUT'])
+        outlets = readmap(outputs['ColumnFileToPcrasterMap']['OUTPUT'])
+        # aguila(outlets)
+
+        outlets_unique = ordinal(cover(uniqueid(outlets),0))
+        # aguila(outlets_unique)
+
+        MaxNumOutlets = mapmaximum(outlets_unique) #creates a raster of the maximum value
+        MaxNumOutletsTuple = cellvalue(MaxNumOutlets,0,0) #grab a value from a position in a Raster
+        MaxNumOutletsValue = MaxNumOutletsTuple[0] # grab first element
+
+        feedback.pushInfo(f'💧 Maximum number of outlets is {MaxNumOutletsValue}')
+
+
+        for outlet in range(1, MaxNumOutletsValue + 1):
+            subcatchment = catchment(ldd, ifthenelse(outlets_unique == outlet,boolean(1), boolean(0)))
+            report(subcatchment, 'subcatchment'+str(outlet)+'.map')
+            
+            if feedback.isCanceled():
+                return {}
+            self.updateProgress(feedback)
+
+
+
+        # Translate (convert format) - This ensures correct tif ready for whitebox
+        alg_params = {
+            'COPY_SUBDATASETS': False,
+            'DATA_TYPE': 0,  # Use Input Layer Data Type
+            'EXTRA': '',
+            'INPUT': input_dem_layer,
+            'NODATA': -9999,
+            'OPTIONS': None,
+            'TARGET_CRS': dem_crs,
+            'OUTPUT': os.path.join(folders['whitebox'],"cleaned_dem.tif")
+        }
+        outputs['TranslateConvertFormat'] = processing.run('gdal:translate', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+        
+        if feedback.isCanceled():
+            return {}
+        self.updateProgress(feedback)
+
+        input_dem = outputs['TranslateConvertFormat']['OUTPUT']
+        output_dem = os.path.join(folders['whitebox'],"filled_dem.tif") 
+        output_flowdir = os.path.join(folders['whitebox'],"flow_dir.tif") 
+        output_flowacc = os.path.join(folders['whitebox'],"flow_acc.tif") 
+        output_snapped_pour_points = os.path.join(folders['pour_points'],"snapped.shp") 
+
+        self.wbt.fill_depressions(input_dem, output_dem)
+
+        if feedback.isCanceled():
+            return {}
+
+        self.wbt.d8_pointer(output_dem, output_flowdir)
+
+        if feedback.isCanceled():
+            return {}
+
+        self.wbt.d8_flow_accumulation(output_dem, output_flowacc)
+
+        if feedback.isCanceled():
+            return {}
+
+        # pcraster_pour_points = outputs['Centroids']['OUTPUT']
+        pour_points = outputs['ExtractSpecificVertices']['OUTPUT']
+
+        self.wbt.snap_pour_points(pour_points, output_flowacc, output_snapped_pour_points, snap_dist = 2)
+
+        if feedback.isCanceled():
+            return {}
+        self.updateProgress(feedback)
+
+        ##Load layer as a QGIS layer
+        snapped = QgsVectorLayer(output_snapped_pour_points, 'snapped', 'ogr')
+
+
+        ## To create individualised watersheds and longest streams, we need to split the pour points into individual layers
+
+        # Split vector layer - this takes the pour points file and creates individual files for each.
+        # This is required for the watershed and longest streampath functions performed later.
+        alg_params = {
+            'FIELD': 'ID',
+            'FILE_TYPE': 1,  # shp
+            'INPUT': output_snapped_pour_points,
+            'PREFIX_FIELD': True,
+            'OUTPUT': folders['pour_points']
+        }
+        outputs['SplitVectorLayer'] = processing.run('native:splitvectorlayer', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+        
+        if feedback.isCanceled():
+            return {}
+        self.updateProgress(feedback)
+
+        # Create catchment polygons
+
+        catchment_filepaths = []
+        flowpath_filepaths = []
+        processed_ids = []
+
+        for i, feat in enumerate(snapped.getFeatures()):
+
+            value = int(feat['ID'])
+            processed_ids.append(value)
+            self.wbt.watershed(
+                output_flowdir,
+                os.path.join(folders['pour_points'],f"ID_{value}.shp"),
+                os.path.join(folders['catchments'],f"catchment_{value}.tif")
+            )
+            
+            if feedback.isCanceled():
+                return {}
+            self.updateProgress(feedback)
+        
+            self.wbt.longest_flowpath(
+                output_dem,
+                os.path.join(folders['catchments'],f"catchment_{value}.tif"),
+                os.path.join(folders['stream_paths'],f"longest_flowpath_{value}.shp")
+            )
+
+            self.add_equal_area_slope(
+                os.path.join(folders['stream_paths'], f"longest_flowpath_{value}.shp"),
+                output_dem,
+                os.path.join(folders['stream_paths'], f"longest_flowpath_{value}.csv")
+            )
+
+
+            # Polygonize - convert the raster layer from whitebox into a vector.
+            alg_params = {
+                'BAND': 1,
+                'EIGHT_CONNECTEDNESS': False,
+                'EXTRA': '',
+                'FIELD': 'DN',
+                'INPUT': os.path.join(folders['catchments'],f"catchment_{value}.tif"),
+                'OUTPUT': os.path.join(folders['catchments'],f"catchment_{value}.shp")
+            }
+            outputs[f'PolygonizeRasterToVector_{value}'] = processing.run('gdal:polygonize', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+
+            # Remove null geometries
+            alg_params = {
+                'INPUT': os.path.join(folders['catchments'],f"catchment_{value}.shp"),
+                'REMOVE_EMPTY': True,
+                'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+            }
+            outputs[f'RemoveNullGeometries_{value}'] = processing.run('native:removenullgeometries', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+            
+
+            # Dissolve - use this to combine any features that might have been disjointed
+            alg_params = {
+                'FIELD': [''],
+                'INPUT': outputs[f'RemoveNullGeometries_{value}']['OUTPUT'],
+                'SEPARATE_DISJOINT': False,
+                'OUTPUT': os.path.join(folders['catchments'],f"catchment_{value}.shp")
+            }
+            outputs[f'Dissolve_{value}'] = processing.run('native:dissolve', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+            results[f"catchment_{value}"] = outputs[f'Dissolve_{value}']['OUTPUT']
+            results[f"longest_flowpath_{value}"] = os.path.join(folders['stream_paths'],f"longest_flowpath_{value}.shp")
+
+            ## Add to QGIS arrays for loading in canvas later
+            catchment_filepaths.append(outputs[f'Dissolve_{value}']['OUTPUT'])
+            flowpath_filepaths.append(os.path.join(folders['stream_paths'],f"longest_flowpath_{value}.shp"))
+
+            number_of_features = i 
+        
+            if feedback.isCanceled():
+                return {}
+            self.updateProgress(feedback)
+
+
+        if feedback.isCanceled():
+            return {}
+        self.updateProgress(feedback)
+
+
+        ## Next we take the subcatchments and perform hydrologic calculations on them
+        ## Method using RFFP 2000 method
+        ## Culvert design uses Q10 (edit - can expand this later)
+        ## Inputs required - coordinates, area, longest streampath.
+        ## Refer Design flood estimation in Western Australia by David Flavell, 2012
+
+
+        selected_runoff_method = self.parameterAsEnum(parameters, 'chosen_rainfall_analysis', context)  ## options=['Flavels RFFP2000 (Pilbara)' = 0,'Rational (basic, global)' = 1]
+
+        if selected_runoff_method == 0:
+            feedback.pushInfo(f'🌧️ Runoff method selected: Flavels RFFP2000 (Pilbara)')
+        else:
+            feedback.pushInfo(f'🌧️ Runoff method selected: Rational (basic, global)')
+
+        flow_rates_by_id = {} # store calculated flow rates in a dictionary
+      
+        for value in processed_ids:
+            if feedback.isCanceled():
+                return {}
+            catchment_filepath = os.path.join(folders['catchments'],f"catchment_{value}.shp")
+            longest_flowpath_filepath = os.path.join(folders['stream_paths'],f"longest_flowpath_{value}.shp")
+
+            catchment_QGIS = QgsVectorLayer(catchment_filepath, "catchment", "ogr")
+
+            catchment_feature = next(catchment_QGIS.getFeatures(), None)
+            catchment_geometry = QgsGeometry(catchment_feature.geometry())
+            
+            area = catchment_geometry.area()/1_000_000 # convert m2 to km2
+            print(f'🗺️  Area for {value} is {area} km2')            
+
+            centroid = catchment_geometry.centroid().asPoint()
+
+            transform_object = QgsCoordinateTransform(catchment_QGIS.sourceCrs(), QgsCoordinateReferenceSystem('EPSG:4326'), QgsProject.instance())         #this is a QgsCoordinateTransform object that has a transform method
+
+            ## Convert the centroids to EPSGL4326 for lat and long extraction required for Flavells RFFP2000
+            centroid_transformed = transform_object.transform(centroid)
+
+            ## Edit - Uncomment later
+            # longitude = centroid_transformed.x()
+            # latitude = centroid_transformed.y()
+
+            ## Temporary lat/long that's in the pilbara region.
+            longitude = 119
+            latitude = 23
+
+            print(f'📍 Coordinates for {value} is LAT: {latitude} degrees, LONG: {longitude} degrees')
+
+            flowpath_QGIS = QgsVectorLayer(longest_flowpath_filepath, "flowpath", "ogr")
+            flowpath_feature = next(flowpath_QGIS.getFeatures())
+            field_names = [f.name() for f in flowpath_feature.fields()]
+            feedback.pushInfo(f"🌾 Fields found: {field_names}")
+
+            flowpath_slope = flowpath_feature['EAS'] * 10 # convert percent grade (1/100) to m/km (1/1000)
+            flowpath_length = flowpath_feature['LENGTH']/1000 # convert m to km
+
+            print(f'🦦 Flow path length: {flowpath_length} km, Flow path slope: {flowpath_slope} m/km')
+
+            # FLAVELL 2012, RFFP 2000
+            Q_10 = (
+                    2.36e-34 * 
+                    (area * flowpath_slope**0.5)**0.81 * 
+                    latitude**-15.24 * longitude**26.28 * 
+                    (flowpath_length**2 / area)**-0.39
+                )
+
+            flow_rates_by_id[int(value)] = Q_10
+            print(f'💧 Flowrate for {value} is {Q_10}\n')
+
+            self.updateProgress(feedback)
+
+        if feedback.isCanceled():
+            return {}
+        self.updateProgress(feedback)
+
+        ## Next use the flow rates to size culverts
+        ## Always designing for corrugated metal pipe as observed in industry
+        ## Assumes no overtopping and design will factor for high enough embankment
+
+
+        culverts.startEditing() # unlock the culvert shapefile to update the diameter
+
+        for value in processed_ids:
+            if feedback.isCanceled():
+                return {}
+            Q = flow_rates_by_id[int(value)]
+            D_array = [0.6,0.9,1.2,1.8,2.4,3.2] # standard culvert dia options
+
+            ## --- For inlet control --- #
+            # For Thin Edge Projecting Inlet - Table 1, HY-8 Equation 1 (HY-8 User Manual / FHWA HDS-5)
+            # Inlet type - straight, projecting, circular corrugated metal pipe
+            # All constants for that inlet type
+            a = 0.187321 
+            b = 0.56771 
+            c = -0.156544 
+            d = 0.0447052 
+            e = -0.00343602 
+            f = 8.96610e-05
+            KE = 0.9
+            SR = 0.5
+
+            ## --- For outlet control --- ##
+            Ku = 29 # Constant provided by HDS-5
+            n = 0.024 # mannings n of corrugated steel pipe
+            g = 9.81 # gravity
+
+            for culvert in culverts.getFeatures(f"ID={value}"): #filter by 'ID'
+                L = culvert['Len_or_ANA']
+                us_invert = culvert['US_Invert']
+                ds_invert = culvert['DS_Invert']
+                Ls = us_invert - ds_invert # (m) Drop in height from inlet to outlet
+            
+
+            Hw_ratio_max = 0 
+            Chosen_D = 0
+
+
+            for D in D_array:
+                if feedback.isCanceled():
+                    return {}
+                
+                ## ---- INLET CONTROL CALCULATION ---- ##
+                B = D # in the case of a circular culvert
+                QBD = Q/(B*D**1.5)
+
+                # HY-8 Polynomial Generation
+
+                Hw_ic = (a + b*QBD + c*QBD**2 + d*QBD**3 + e*QBD**4 + f*QBD**5 )*D
+
+                print(f'🌊 Inlet control headwater ratio for {value} with a {D}m dia. barrel is {Hw_ic/D}')
+
+
+
+                ## ---- OUTLET CONTROL CALCULATION ---- ##
+                # Equation 3.5 and 3.6 in FHWA HDS-5
+                A = math.pi * D**2 / 4 # Area
+                P = math.pi*D # Wetted Perimeter
+                Tw = D # Tailwater - assume this to be either 0 m or equal to pipe height
+                
+                V = Q / A
+                R = A / P
+                
+                He = KE* V**2 / (2*g) # Entrance loss - Equation 3.4a
+
+                Hf = (Ku * n**2 * L / R**1.33) * V**2 / 2 / 9.81 # Friction loss - Equation 3.4b
+
+                Ho = V**2 / (2*g) # Exit loss - Equation 3.4d
+
+                Hl = He + Hf + Ho # Equation 3.1
+
+                Hw_oc = Tw + Hl - Ls # Equation 3.6b
+
+                print(f'🌊 Outlet control headwater ratio for {value} with a {D}m dia. barrel is {Hw_oc/D}')
+
+                ## ---- ASSIGNING VALUES ---- ##
+
+                if Hw_ic > Hw_oc:
+                    print(f'Inlet controlled\n')
+                    
+                    if Hw_ic/D < 1.5 and Hw_ic/D > Hw_ratio_max: #1.5 is the upper limit of allowable Hw/D ratio
+                            Hw_ratio_max = Hw_ic/D
+                            Chosen_D = D
+
+                else:
+                    print(f'Oulet controlled\n')
+                    
+                    if Hw_oc/D < 1.5 and Hw_oc/D > Hw_ratio_max: #1.5 is the upper limit of allowable Hw/D ratio
+                        Hw_ratio_max = Hw_oc/D
+                        Chosen_D = D
+
+                self.updateProgress(feedback)
+
+            print(f'⭕️ Chosen diameter: {Chosen_D}m with headwater ratio of {Hw_ratio_max}\n')
+
+            for culvert in culverts.getFeatures(f"ID={value}"): #filter by 'ID'
+                culvert['Width_or_D'] = float(Chosen_D)
+                culvert['Number_of'] = int(1) ## EDIT -- update this later for multi barrel configurations
+                culverts.updateFeature(culvert)
+
+
+        culverts.commitChanges()
+
+
+        if feedback.isCanceled():
+            return {}
+        self.updateProgress(feedback)
+
+
+        ## VISUALISATION IN CANVAS
+
+        # ADD CATCHMENTS
+        for filepath in catchment_filepaths:
+            QgsProject.instance().addMapLayer(QgsVectorLayer(filepath, os.path.basename(filepath), "ogr"))
+
+        # ADD FLOWPATHS
+        for filepath in flowpath_filepaths:
+            QgsProject.instance().addMapLayer(QgsVectorLayer(filepath, os.path.basename(filepath), "ogr"))
+
+        # ADD CULVERTS
+        QgsProject.instance().addMapLayer(culverts)
+
+
+
+        results['catchments_output'] = folders['catchments']
+
+        return results
+
+
+
+
+
+
 
     def name(self):
         """
@@ -130,7 +1013,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         lowercase alphanumeric characters only and no spaces or other
         formatting characters.
         """
-        return 'Culvert Designer'
+        return 'culvert_designer'
 
     def displayName(self):
         """
@@ -161,3 +1044,8 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
 
     def createInstance(self):
         return CulvertDesignerAlgorithm()
+
+    def icon(self):
+        cmd_folder = os.path.split(inspect.getfile(inspect.currentframe()))[0]
+        icon = QIcon(os.path.join(os.path.join(cmd_folder, 'icon.jpg')))
+        return icon
