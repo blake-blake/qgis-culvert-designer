@@ -36,6 +36,8 @@ import inspect
 import subprocess
 import math
 import csv
+import time as pytime
+from datetime import datetime
 from qgis.PyQt.QtGui import QIcon
 from qgis.utils import iface
 from pcraster import *
@@ -93,6 +95,9 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
     wbt = WhiteboxTools()
 
     def updateProgress(self, feedback):
+        """
+        Helper function to update the QGIS UI progress bar
+        """
         feedback.setCurrentStep(self.step_counter)
         if feedback.isCanceled():
             return {}
@@ -154,9 +159,10 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
                 'output_strahler.map', 
                 optional=True, 
                 behavior=QgsProcessingParameterFile.File, 
-                fileFilter='Flow Direction File (*.map)', 
-                defaultValue='/Users/blakehillwood/Desktop/Testing/Backup/tuflow test/output_strahler.map'
-            ) ##EDIT -- replace defailt with None
+                fileFilter='Flow Direction File (*.map)',
+                defaultValue= None 
+                # defaultValue='/Users/blakehillwood/Desktop/Testing/Backup/tuflow test/output_strahler.map'
+            ) ##EDIT -- replace default with None
         param.setFlags(param.flags() | QgsProcessingParameterDefinition.FlagAdvanced)
         self.addParameter(param)
 
@@ -229,7 +235,14 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         vlayer.commitChanges()
 
         
-
+    def log(self, feedback, message):
+        """
+        Print messages to QGIS console and python console with timestamp
+        """
+        now = datetime.now()
+        text = f"✏️ [{now.strftime('%H:%M:%S')}] {message}"
+        feedback.pushInfo(text)
+        print(text)
 
 
 
@@ -247,6 +260,28 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         results = {}
         outputs = {}
 
+        ## Use time logs to track and test speed of processing
+
+        start_time = pytime.time() # start timer
+        recent_timestamp = [start_time] # store most recent lap time
+        step_times = {} # store all times
+
+        ## Use a python closure for time keeping
+        def log_timer(step_name):
+            """
+            Reports the time between the last call and the current call
+            """
+            current_time = pytime.time()
+            elapsed_time = current_time - recent_timestamp[0]
+            step_times[step_name] = elapsed_time
+            recent_timestamp[0] = current_time
+            self.log(feedback, f"{step_name}, complete in {elapsed_time:.2f}s")
+
+            
+
+
+        ## Start the algorithm
+
         folders = self.initialiseFolders(parameters, context, feedback)
 
         parameters['catchments_output'] = folders['catchments'] #use this to open all the catchment files on completion
@@ -256,6 +291,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         dem_crs = input_dem_layer.crs()
         QgsProject.instance().addMapLayer(input_dem_layer)
 
+        log_timer("Initialise project")
 
         road_layer = self.parameterAsVectorLayer(parameters, 'RoadAlignment', context)
         if road_layer.crs() != dem_crs:
@@ -291,6 +327,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         if not output_strahlermap:
             ## Ldd create is used to calculate the flow path directions
             ## lddcreate
+            self.log(feedback, "New output strahler being created")
 
             alg_params = {
                 'INPUT': outputs['ConvertToPcrasterFormat']['OUTPUT'],
@@ -306,9 +343,12 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
             outputs['Lddcreate'] = processing.run('pcraster:lddcreate', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
         else:
             ## Use this to copy and load an existing file
+            self.log(feedback, "Existing strahler being used")
             new_path = os.path.join(folders['lddcreate'], 'output_strahlermap.map')
             shutil.copy(output_strahlermap, new_path) # EDIT -- make this robust to if the file selected is already here.
             outputs['Lddcreate'] = {'OUTPUT': new_path} # uses the original specified file
+
+        log_timer("Flow direction map creation")
 
 
         if feedback.isCanceled():
@@ -328,7 +368,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         # creating multiple streamorder rasters and save
         setclone(outputs['Streamorder']['OUTPUT'])
         cellSize = float(celllength())
-        print(f'Cell size check: {cellSize}')
+        feedback.pushInfo(f'Cell size check: {cellSize}')
 
         StrahlerOrder = readmap(outputs['Streamorder']['OUTPUT'])        
 
@@ -507,8 +547,6 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         }
         outputs['AddAutoincrementalField'] = processing.run('native:addautoincrementalfield', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
 
-        print("✅ Incremented buffer complete")
-
         # Join attributes by location2 - assign unique ID to inlet & outlet within the same buffer
         alg_params = {
             'DISCARD_NONMATCHING': False,
@@ -522,8 +560,6 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         }
         outputs['JoinAttributesByLocation2'] = processing.run('native:joinattributesbylocation', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
 
-        print("✅ Join attributes by location2 complete")
-
         # Points to path - join inlets & outlets with matching IDs
         alg_params = {
             'CLOSE_PATH': False,
@@ -535,8 +571,6 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         }
         outputs['PointsToPath'] = processing.run('native:pointstopath', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
 
-        print("✅ Points to path complete")
-
         # Geometry by expression - ensure the culverts are facing downstream
         alg_params = {
             'EXPRESSION': "if(raster_value('DEM',1,start_point($geometry))<raster_value('DEM',1,end_point($geometry)), reverse($geometry),$geometry)",
@@ -547,21 +581,38 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
             'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
         }
         outputs['GeometryByExpression'] = processing.run('native:geometrybyexpression', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
-
-        print("✅ Geometry by expression complete")
     
         # Refactor fields - this replicates a sample TUFLOW 1d_nwk
         alg_params = {
-            'FIELDS_MAPPING': [{'alias': '','comment': '','expression': 'GEN_ID','length': 36,'name': 'ID','precision': 0,'sub_type': 0,'type': 10,'type_name': 'text'},{'alias': '','comment': '','expression': "'C'",'length': 4,'name': 'Type','precision': 0,'sub_type': 0,'type': 10,'type_name': 'text'},{'alias': '','comment': '','expression': '"Ignore"','length': 1,'name': 'Ignore','precision': 0,'sub_type': 0,'type': 10,'type_name': 'text'},{'alias': '','comment': '','expression': '"UCS"','length': 1,'name': 'UCS','precision': 0,'sub_type': 0,'type': 10,'type_name': 'text'},{'alias': '','comment': '','expression': '$length','length': 15,'name': 'Len_or_ANA','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': '"n_nF_Cd"','length': 15,'name': 'n_nF_Cd','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': "raster_value('DEM', 1, start_point($geometry))",'length': 15,'name': 'US_Invert','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': "raster_value('DEM', 1, end_point($geometry))",'length': 15,'name': 'DS_Invert','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': '"Form_Loss"','length': 15,'name': 'Form_Loss','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': '"pBlockage"','length': 15,'name': 'pBlockage','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': '"Inlet_Type"','length': 50,'name': 'Inlet_Type','precision': 0,'sub_type': 0,'type': 10,'type_name': 'text'},{'alias': '','comment': '','expression': '"Conn_1D_2D"','length': 4,'name': 'Conn_1D_2D','precision': 0,'sub_type': 0,'type': 10,'type_name': 'text'},{'alias': '','comment': '','expression': '"Conn_No"','length': 8,'name': 'Conn_No','precision': 0,'sub_type': 0,'type': 2,'type_name': 'integer'},{'alias': '','comment': '','expression': '"Width_or_D"','length': 15,'name': 'Width_or_D','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': '"Height_or_"','length': 15,'name': 'Height_or_','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': '"Number_of"','length': 8,'name': 'Number_of','precision': 0,'sub_type': 0,'type': 2,'type_name': 'integer'},{'alias': '','comment': '','expression': '"HConF_or_W"','length': 15,'name': 'HConF_or_W','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': '"WConF_or_W"','length': 15,'name': 'WConF_or_W','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': '"EntryC_or_"','length': 15,'name': 'EntryC_or_','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},{'alias': '','comment': '','expression': '"ExitC_or_W"','length': 15,'name': 'ExitC_or_W','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'}],
+            'FIELDS_MAPPING': [
+                {'alias': '','comment': '','expression': 'GEN_ID','length': 36, 'name': 'ID','precision': 0,'sub_type': 0,'type': 10,'type_name': 'text'},
+                {'alias': '','comment': '','expression': "'C'",'length': 4,'name': 'Type','precision': 0,'sub_type': 0,'type': 10,'type_name': 'text'},
+                {'alias': '','comment': '','expression': "'F'",'length': 1,'name': 'Ignore','precision': 0,'sub_type': 0,'type': 10,'type_name': 'text'},
+                {'alias': '','comment': '','expression': "'T'",'length': 1,'name': 'UCS','precision': 0,'sub_type': 0,'type': 10,'type_name': 'text'},
+                {'alias': '','comment': '','expression': '$length','length': 15,'name': 'Len_or_ANA','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},
+                {'alias': '','comment': '','expression': '0.024','length': 15,'name': 'n_nF_Cd','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},
+                {'alias': '','comment': '','expression': "raster_value('DEM', 1, start_point($geometry))",'length': 15,'name': 'US_Invert','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},
+                {'alias': '','comment': '','expression': "raster_value('DEM', 1, end_point($geometry))",'length': 15,'name': 'DS_Invert','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},
+                {'alias': '','comment': '','expression': '"Form_Loss"','length': 15,'name': 'Form_Loss','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},
+                {'alias': '','comment': '','expression': '"pBlockage"','length': 15,'name': 'pBlockage','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},
+                {'alias': '','comment': '','expression': '"Inlet_Type"','length': 50,'name': 'Inlet_Type','precision': 0,'sub_type': 0,'type': 10,'type_name': 'text'},
+                {'alias': '','comment': '','expression': '"Conn_1D_2D"','length': 4,'name': 'Conn_1D_2D','precision': 0,'sub_type': 0,'type': 10,'type_name': 'text'},
+                {'alias': '','comment': '','expression': '"Conn_No"','length': 8,'name': 'Conn_No','precision': 0,'sub_type': 0,'type': 2,'type_name': 'integer'},
+                {'alias': '','comment': '','expression': '"Width_or_D"','length': 15,'name': 'Width_or_D','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},
+                {'alias': '','comment': '','expression': '"Height_or_"','length': 15,'name': 'Height_or_','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},
+                {'alias': '','comment': '','expression': '"Number_of"','length': 8,'name': 'Number_of','precision': 0,'sub_type': 0,'type': 2,'type_name': 'integer'},
+                {'alias': '','comment': '','expression': '"HConF_or_W"','length': 15,'name': 'HConF_or_W','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},
+                {'alias': '','comment': '','expression': '1.0','length': 15,'name': 'WConF_or_W','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},
+                {'alias': '','comment': '','expression': '0.5','length': 15,'name': 'EntryC_or_','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'},
+                {'alias': '','comment': '','expression': '1.0','length': 15,'name': 'ExitC_or_W','precision': 5,'sub_type': 0,'type': 6,'type_name': 'double precision'}
+                ],
             'INPUT': outputs['GeometryByExpression']['OUTPUT'],
             'OUTPUT': os.path.join(folders['culvert'],'1d_nwk.shp')
         }
         outputs['RefactorFields'] = processing.run('native:refactorfields', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
         results['RefactorFields'] = outputs['RefactorFields']['OUTPUT']
        
-        print("✅ Refactor fields complete")
-
-        ## Etract in the inlet ends to use as pour points
+        ## Extract in the inlet ends to use as pour points
         pourpoints_filepath = os.path.join(folders['pcraster'], 'pour_points.col')
     
 
@@ -577,9 +628,10 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
             return {}
         self.updateProgress(feedback)
 
-
+        log_timer("Culvert network generated")
 
         ## --- Following takes the culvert inlets and defines the subcatchments ---- #
+        ## EDIT -- confirm if this is still needed (?) - now using whitebox.
 
         culverts = QgsVectorLayer(outputs['RefactorFields']['OUTPUT'], "1d_nwk", "ogr")
 
@@ -591,8 +643,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
                 x = line[0].x()
                 # y = geom.asPoint().y()
                 y = line[0].y()
-                value = 1 # create a boolean (could be a unique ID later ?? maybe not, was giving errors)
-                # value = feat['ID'] # gives errors....
+                value = 1 # 
                 f.write(f"{x} {y} {value}\n")
 
                 if feedback.isCanceled():
@@ -787,6 +838,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
                 return {}
             self.updateProgress(feedback)
 
+        log_timer("Catchments and streams generated")
 
         if feedback.isCanceled():
             return {}
@@ -821,7 +873,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
             catchment_geometry = QgsGeometry(catchment_feature.geometry())
             
             area = catchment_geometry.area()/1_000_000 # convert m2 to km2
-            print(f'🗺️  Area for {value} is {area} km2')            
+            feedback.pushInfo(f'🗺️  Area for {value} is {area} km2')            
 
             centroid = catchment_geometry.centroid().asPoint()
 
@@ -863,6 +915,8 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
 
             self.updateProgress(feedback)
 
+        log_timer("Flow rates calculated")
+
         if feedback.isCanceled():
             return {}
         self.updateProgress(feedback)
@@ -878,7 +932,8 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
             if feedback.isCanceled():
                 return {}
             Q = flow_rates_by_id[int(value)]
-            D_array = [0.6,0.9,1.2,1.8,2.4,3.2] # standard culvert dia options
+            # D_array = [0.6,0.9,1.2,1.8,2.4,3.2] # standard culvert dia options
+            D_array = [3.2,2.4,1.8,1.2,0.9,0.6]
 
             ## --- For inlet control --- #
             # For Thin Edge Projecting Inlet - Table 1, HY-8 Equation 1 (HY-8 User Manual / FHWA HDS-5)
@@ -974,6 +1029,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
 
         culverts.commitChanges()
 
+        log_timer("Culverts designed")
 
         if feedback.isCanceled():
             return {}
