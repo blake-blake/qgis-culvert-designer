@@ -161,8 +161,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
                 behavior=QgsProcessingParameterFile.File, 
                 fileFilter='Flow Direction File (*.map)',
                 defaultValue= None 
-                # defaultValue='/Users/blakehillwood/Desktop/Testing/Backup/tuflow test/output_strahler.map'
-            ) ##EDIT -- replace default with None
+            ) 
         param.setFlags(param.flags() | QgsProcessingParameterDefinition.FlagAdvanced)
         self.addParameter(param)
 
@@ -631,7 +630,6 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         log_timer("Culvert network generated")
 
         ## --- Following takes the culvert inlets and defines the subcatchments ---- #
-        ## EDIT -- confirm if this is still needed (?) - now using whitebox.
 
         culverts = QgsVectorLayer(outputs['RefactorFields']['OUTPUT'], "1d_nwk", "ogr")
 
@@ -873,6 +871,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
             catchment_geometry = QgsGeometry(catchment_feature.geometry())
             
             area = catchment_geometry.area()/1_000_000 # convert m2 to km2
+            area = area * 1.4 # 40% increase to factor for cathcment sensitivity
             feedback.pushInfo(f'🗺️  Area for {value} is {area} km2')            
 
             centroid = catchment_geometry.centroid().asPoint()
@@ -1023,7 +1022,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
 
             for culvert in culverts.getFeatures(f"ID={value}"): #filter by 'ID'
                 culvert['Width_or_D'] = float(Chosen_D)
-                culvert['Number_of'] = int(1) ## EDIT -- update this later for multi barrel configurations
+                culvert['Number_of'] = int(1) ## use this to update this later for multi barrel configurations
                 culverts.updateFeature(culvert)
 
 
