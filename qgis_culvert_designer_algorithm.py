@@ -890,7 +890,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
             longitude = 119
             latitude = 23
 
-            print(f'📍 Coordinates for {value} is LAT: {latitude} degrees, LONG: {longitude} degrees')
+            feedback.pushInfo(f'📍 Coordinates for {value} is LAT: {latitude} degrees, LONG: {longitude} degrees')
 
             flowpath_QGIS = QgsVectorLayer(longest_flowpath_filepath, "flowpath", "ogr")
             flowpath_feature = next(flowpath_QGIS.getFeatures())
@@ -900,7 +900,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
             flowpath_slope = flowpath_feature['EAS'] * 10 # convert percent grade (1/100) to m/km (1/1000)
             flowpath_length = flowpath_feature['LENGTH']/1000 # convert m to km
 
-            print(f'🦦 Flow path length: {flowpath_length} km, Flow path slope: {flowpath_slope} m/km')
+            feedback.pushInfo(f'🦦 Flow path length: {flowpath_length} km, Flow path slope: {flowpath_slope} m/km')
 
             # FLAVELL 2012, RFFP 2000
             Q_10 = (
@@ -911,7 +911,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
                 )
 
             flow_rates_by_id[int(value)] = Q_10
-            print(f'💧 Flowrate for {value} is {Q_10}\n')
+            feedback.pushInfo(f'💧 Flowrate for {value} is {Q_10}\n')
 
             self.updateProgress(feedback)
 
@@ -976,7 +976,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
 
                 Hw_ic = (a + b*QBD + c*QBD**2 + d*QBD**3 + e*QBD**4 + f*QBD**5 )*D
 
-                print(f'🌊 Inlet control headwater ratio for {value} with a {D}m dia. barrel is {Hw_ic/D}')
+                feedback.pushInfo(f'🌊 Inlet control headwater ratio for {value} with a {D}m dia. barrel is {Hw_ic/D}')
 
 
 
@@ -999,19 +999,19 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
 
                 Hw_oc = Tw + Hl - Ls # Equation 3.6b
 
-                print(f'🌊 Outlet control headwater ratio for {value} with a {D}m dia. barrel is {Hw_oc/D}')
+                feedback.pushInfo(f'🌊 Outlet control headwater ratio for {value} with a {D}m dia. barrel is {Hw_oc/D}')
 
                 ## ---- ASSIGNING VALUES ---- ##
 
                 if Hw_ic > Hw_oc:
-                    print(f'Inlet controlled\n')
+                    feedback.pushInfo(f'Inlet controlled\n')
                     
                     if Hw_ic/D < 1.5 and Hw_ic/D > Hw_ratio_max: #1.5 is the upper limit of allowable Hw/D ratio
                             Hw_ratio_max = Hw_ic/D
                             Chosen_D = D
 
                 else:
-                    print(f'Oulet controlled\n')
+                    feedback.pushInfo(f'Oulet controlled\n')
                     
                     if Hw_oc/D < 1.5 and Hw_oc/D > Hw_ratio_max: #1.5 is the upper limit of allowable Hw/D ratio
                         Hw_ratio_max = Hw_oc/D
@@ -1019,7 +1019,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
 
                 self.updateProgress(feedback)
 
-            print(f'⭕️ Chosen diameter: {Chosen_D}m with headwater ratio of {Hw_ratio_max}\n')
+            feedback.pushInfo(f'⭕️ Chosen diameter: {Chosen_D}m with headwater ratio of {Hw_ratio_max}\n')
 
             for culvert in culverts.getFeatures(f"ID={value}"): #filter by 'ID'
                 culvert['Width_or_D'] = float(Chosen_D)
