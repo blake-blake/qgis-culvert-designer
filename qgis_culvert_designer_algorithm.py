@@ -112,15 +112,15 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         ## INPUTS
         # We add the input vector features source. It can have any kind of geometry.
 
-        self.addParameter(QgsProcessingParameterEnum('chosen_rainfall_analysis', 'Chosen Rainfall Analysis', options=['Flavels RFFP2000 (Pilbara)','Rational (basic, global)'], allowMultiple=False, usesStaticStrings=False, defaultValue=0))
+        self.addParameter(QgsProcessingParameterEnum('chosen_rainfall_analysis', 'What rainfall region would you like?', options=['Flavels RFFP2000 (Pilbara)','Rational (basic, global)'], allowMultiple=False, usesStaticStrings=False, defaultValue=0))
 
-        self.addParameter(QgsProcessingParameterFile('base_folder', 'Base Folder', behavior=QgsProcessingParameterFile.Folder, fileFilter='All files (*.*)', defaultValue=None))
+        self.addParameter(QgsProcessingParameterFile('base_folder', 'Where would you like all intermediate and final output files saved?', behavior=QgsProcessingParameterFile.Folder, fileFilter='All files (*.*)', defaultValue=None))
 
 
         self.addParameter(
             QgsProcessingParameterFeatureSource(
                 'RoadAlignment',
-                self.tr('Road alignment'),
+                self.tr('What is the file representing the road batter toes?'),
                 [QgsProcessing.TypeVectorAnyGeometry]
             )
         )
@@ -129,7 +129,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         self.addParameter(
             QgsProcessingParameterRasterLayer(
                 'Dem',
-                'Data Elevation Model',
+                'What file is your 1-5m resolution elevation model?',
                 defaultValue=None
             )
         )
@@ -137,7 +137,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         self.addParameter(
             QgsProcessingParameterNumber(
                 'ThresholdOrder',
-                self.tr('Stream order threshold'),
+                self.tr('Select the threshold for defining major streams, a higher number will produce less culvert banks'),
                 type=QgsProcessingParameterNumber.Integer,
                 defaultValue=8,
                 minValue=1
@@ -147,7 +147,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         self.addParameter(
             QgsProcessingParameterNumber(
                 'RoadWidth',
-                self.tr('Approx. Embankment Width (used for culvert grouping)'),
+                self.tr('What is the approximate road width, to group inlets with outlets'),
                 type=QgsProcessingParameterNumber.Integer,
                 defaultValue=50,
                 minValue=1
@@ -156,7 +156,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
 
         param = QgsProcessingParameterFile(
                 'output_strahlermap', 
-                'output_strahler.map', 
+                'Have you already undertaken analysis on your project elevation model? Select the lddcreate map file to speed up future iterations', 
                 optional=True, 
                 behavior=QgsProcessingParameterFile.File, 
                 fileFilter='Flow Direction File (*.map)',
@@ -205,6 +205,12 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
     def add_equal_area_slope(self, line_layer_path, dem_path, csv_filepath):
         """
         This function imports a publically available processing alogirithm to calculate equal area slope and return the float value
+        Original reference can be found here: https://plugins.qgis.org/plugins/Equal_area_slope_QGIS_Plugin/
+        
+        copyright            : (C) 2021 by WSP Global & The University and Queensland
+        email                : ray.shi@wsp.com
+
+        The source files have been saved in /resources/Equal_area_slope_QGIS_Plugin
         """
         from Equal_area_slope_QGIS_Plugin.EA_Slope import EA_Slope
 
