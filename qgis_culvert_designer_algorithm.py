@@ -56,6 +56,7 @@ from qgis.core import (QgsProcessing,
                        QgsProcessingParameterRasterLayer,
                        QgsProcessingParameterRasterDestination,
                        QgsProcessingParameterNumber,
+                       QgsProcessingParameterBoolean,
                        QgsCoordinateReferenceSystem,
                        QgsGeometry,
                        QgsCoordinateTransform,
@@ -65,6 +66,26 @@ from qgis.core import (QgsProcessing,
                        QgsField,
                        edit)
 
+
+# ----------------------------
+# Parameter & Output Keys
+# ----------------------------
+PARAM_RAIN_METHOD = 'chosen_rainfall_analysis'
+PARAM_BASE_FOLDER = 'base_folder'
+PARAM_ROAD = 'road_alignment'
+PARAM_DEM = 'dem'
+PARAM_THRESHOLD_ORDER = 'threshold_order'
+PARAM_ROAD_WIDTH = 'road_width'
+PARAM_EXISTING_LDD = 'output_strahlermap'
+PARAM_ADD_TO_PROJECT = 'load_outputs'
+PARAM_HEADWATER_LIMIT = 'headwater_limit'
+PARAM_MANNINGS_N = 'mannings_n'
+PARAM_SNAP_DIST = 'snap_distance'
+PARAM_AREA_FACTOR = 'area_factor'
+
+OUT_CATCHMENTS_FOLDER = 'catchments_output'
+
+RAIN_METHODS = ['Flavels RFFP2000 (Pilbara)', 'Rational (basic, global)']
 
 
 
@@ -138,16 +159,16 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         # We add the input vector features source. It can have any kind of geometry.
 
         self.addParameter(QgsProcessingParameterEnum(
-            'chosen_rainfall_analysis',
+            PARAM_RAIN_METHOD,
             'What rainfall region would you like?',
-            options= ['Flavels RFFP2000 (Pilbara)','Rational (basic, global)'],
+            options= RAIN_METHODS,
             allowMultiple=False,
             usesStaticStrings=False,
             defaultValue=0
         ))
 
         self.addParameter(QgsProcessingParameterFile(
-            'base_folder',
+            PARAM_BASE_FOLDER,
             'Where would you like all intermediate and final output files saved?',
             behavior=QgsProcessingParameterFile.Folder,
             fileFilter='All files (*.*)',
@@ -155,20 +176,20 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         ))
 
         self.addParameter(QgsProcessingParameterFeatureSource(
-                'RoadAlignment',
+                PARAM_ROAD,
                 self.tr('What is the file representing the road batter toes?'),
                 [QgsProcessing.TypeVectorAnyGeometry]
         ))
 
         # This is the RASTER input
         self.addParameter(QgsProcessingParameterRasterLayer(
-                'Dem',
+                PARAM_DEM,
                 'What file is your 1-5m resolution elevation model?',
                 defaultValue=None
         ))
 
         self.addParameter(QgsProcessingParameterNumber(
-                'ThresholdOrder',
+                PARAM_THRESHOLD_ORDER,
                 self.tr('Select the threshold for defining major streams, a higher number will produce less culvert banks'),
                 type=QgsProcessingParameterNumber.Integer,
                 defaultValue=8,
@@ -176,15 +197,16 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         ))
 
         self.addParameter(QgsProcessingParameterNumber(
-                'RoadWidth',
+                PARAM_ROAD_WIDTH,
                 self.tr('What is the approximate road width, to group inlets with outlets'),
                 type=QgsProcessingParameterNumber.Integer,
                 defaultValue=50,
                 minValue=1
         ))
 
+        #Advanced parameters (defaults with optional changes)
         existing_strahler = QgsProcessingParameterFile(
-                'output_strahlermap', 
+                PARAM_EXISTING_LDD, 
                 'Have you already undertaken analysis on your project elevation model? Select the lddcreate map file to speed up future iterations', 
                 optional=True, 
                 behavior=QgsProcessingParameterFile.File, 
@@ -194,6 +216,38 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         existing_strahler.setFlags(existing_strahler.flags() | QgsProcessingParameterDefinition.FlagAdvanced)
         self.addParameter(existing_strahler)
 
+        param = QgsProcessingParameterBoolean(
+            PARAM_ADD_TO_PROJECT, self.tr('Load outputs to the project?'), defaultValue=True)
+        param.setFlags(param.flags() | QgsProcessingParameterDefinition.FlagAdvanced)
+        self.addParameter(param)
+
+        param = QgsProcessingParameterNumber(
+            PARAM_HEADWATER_LIMIT, self.tr('Max allowable headwater ratio (Hw/D)'),
+            QgsProcessingParameterNumber.Double, defaultValue=1.5, minValue=0.1
+        )
+        param.setFlags(param.flags() | QgsProcessingParameterDefinition.FlagAdvanced)
+        self.addParameter(param)
+        
+        param = QgsProcessingParameterNumber(
+            PARAM_MANNINGS_N, self.tr("Manning's n for corrugated metal pipe"),
+            QgsProcessingParameterNumber.Double, defaultValue=0.024, minValue=0.01, maxValue=0.2
+        )
+        param.setFlags(param.flags() | QgsProcessingParameterDefinition.FlagAdvanced)
+        self.addParameter(param)
+        
+        param = QgsProcessingParameterNumber(
+            PARAM_SNAP_DIST, self.tr('Pour point snap distance (cells/pixels)'),
+            QgsProcessingParameterNumber.Double, defaultValue=2.0, minValue=0.0
+        )
+        param.setFlags(param.flags() | QgsProcessingParameterDefinition.FlagAdvanced)
+        self.addParameter(param)
+        
+        param = QgsProcessingParameterNumber(
+            PARAM_AREA_FACTOR, self.tr('Area sensitivity factor (multiplier)'),
+            QgsProcessingParameterNumber.Double, defaultValue=1.4, minValue=1.0
+        )
+        param.setFlags(param.flags() | QgsProcessingParameterDefinition.FlagAdvanced)
+        self.addParameter(param)
 
         ## Hidden output folder
         out_folder = QgsProcessingParameterFolderDestination(
