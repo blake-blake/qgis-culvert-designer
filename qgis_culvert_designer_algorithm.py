@@ -327,318 +327,115 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         ## Select user defined strahler map for use
         # User provided stream order threshold
         threshold_order = int(self.parameterAsInt(parameters, PARAM_THRESHOLD_ORDER, context))
-        # delete - threshold_order =  parameters['threshold_order']
 
         if threshold_order > max_strahler_value:
             threshold_order = max_strahler_value
             feedback.pushInfo(f'Chosen threshold was above maximum, using maximum of {max_strahler_value} instead.')
 
         chosen_stream_map= os.path.join(folders['strahler'],'stream'+str(threshold_order)+'.map')
-        
-        # delete - results['strahler'] = chosen_stream_map
-        
+                
         road_intersections = self.find_road_intersections(context, feedback, folders, chosen_stream_map, road_layer)
         
         culvert_network_path = self.create_culvert_network(context, feedback, folders, road_intersections)
         culvert_network_empty = QgsVectorLayer(culvert_network_path, "1d_nwk", "ogr")
-
-        pour_points_path = extract_pour_points(context, feedback, folders, culvert_network_empty)
-
-        
         log_timer("Culvert network generated")
 
-        # delete - ?? # ## --- Following takes the culvert inlets and defines the subcatchments ---- #
+        pour_points_path = self.extract_pour_points(context, feedback, folders, culvert_network_empty)
 
-        # with open(pour_points_path, 'w') as f:
-        #     for feat in culverts.getFeatures():
-        #         geom = feat.geometry()
-        #         line = geom.asMultiPolyline()[0]
-        #         # x = geom.asPoint().x()
-        #         x = line[0].x()
-        #         # y = geom.asPoint().y()
-        #         y = line[0].y()
-        #         value = 1 # 
-        #         f.write(f"{x} {y} {value}\n")
-
-        #         if feedback.isCanceled():
-        #             return {}
-
-       
-
-        # if feedback.isCanceled():
-        #     return {}
-        # self.update_progress(feedback)
-
-        # delete - ?? ## Convert centroids col file to .map
-
-        # # Column file to PCRaster Map
-        # alg_params = {
-        #     'INPUT': pour_points_path,
-        #     'INPUT1': outputs['ConvertToPcrasterFormat']['OUTPUT'],
-        #     'INPUT2': 0,  # Boolean
-        #     'OUTPUT': os.path.join(folders['pcraster'],'col2map.map')
-        # }
-        # outputs['ColumnFileToPcrasterMap'] = processing.run('pcraster:col2map', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
-
-        # if feedback.isCanceled():
-        #     return {}
-        # self.update_progress(feedback)
-
-        # # Subcatchments to points
-        # setclone(outputs['ConvertToPcrasterFormat']['OUTPUT'])
-        # ldd = readmap(outputs['Lddcreate']['OUTPUT'])
-        # outlets = readmap(outputs['ColumnFileToPcrasterMap']['OUTPUT'])
-        # # aguila(outlets)
-
-        # outlets_unique = ordinal(cover(uniqueid(outlets),0))
-        # # aguila(outlets_unique)
-
-        # MaxNumOutlets = mapmaximum(outlets_unique) #creates a raster of the maximum value
-        # MaxNumOutletsTuple = cellvalue(MaxNumOutlets,0,0) #grab a value from a position in a Raster
-        # MaxNumOutletsValue = MaxNumOutletsTuple[0] # grab first element
-
-        # feedback.pushInfo(f'💧 Maximum number of outlets is {MaxNumOutletsValue}')
-
-
-        # for outlet in range(1, MaxNumOutletsValue + 1):
-        #     subcatchment = catchment(ldd, ifthenelse(outlets_unique == outlet,boolean(1), boolean(0)))
-        #     report(subcatchment, 'subcatchment'+str(outlet)+'.map')
-            
-        #     if feedback.isCanceled():
-        #         return {}
-        #     self.update_progress(feedback)
-
-
-
-        # Translate (convert format) - This ensures correct tif ready for whitebox
-        alg_params = {
-            'COPY_SUBDATASETS': False,
-            'DATA_TYPE': 0,  # Use Input Layer Data Type
-            'EXTRA': '',
-            'INPUT': input_dem_layer,
-            'NODATA': -9999,
-            'OPTIONS': None,
-            'TARGET_CRS': dem_crs,
-            'OUTPUT': os.path.join(folders['whitebox'],"cleaned_dem.tif")
-        }
-        outputs['TranslateConvertFormat'] = processing.run('gdal:translate', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
-        
-        if feedback.isCanceled():
-            return {}
-        self.update_progress(feedback)
-
-        input_dem = outputs['TranslateConvertFormat']['OUTPUT']
-        output_dem = os.path.join(folders['whitebox'],"filled_dem.tif") 
-        output_flowdir = os.path.join(folders['whitebox'],"flow_dir.tif") 
-        output_flowacc = os.path.join(folders['whitebox'],"flow_acc.tif") 
-        output_snapped_pour_points = os.path.join(folders['pour_points'],"snapped.shp") 
-
-        self.wbt.fill_depressions(input_dem, output_dem)
-
-        if feedback.isCanceled():
-            return {}
-
-        self.wbt.d8_pointer(output_dem, output_flowdir)
-
-        if feedback.isCanceled():
-            return {}
-
-        self.wbt.d8_flow_accumulation(output_dem, output_flowacc)
-
-        if feedback.isCanceled():
-            return {}
-
-        # pcraster_pour_points = outputs['Centroids']['OUTPUT']
-        pour_points = outputs['ExtractSpecificVertices']['OUTPUT']
-
-        self.wbt.snap_pour_points(pour_points, output_flowacc, output_snapped_pour_points, snap_dist = 2)
-
-        if feedback.isCanceled():
-            return {}
-        self.update_progress(feedback)
-
-        ##Load layer as a QGIS layer
-        snapped = QgsVectorLayer(output_snapped_pour_points, 'snapped', 'ogr')
-
-
-        ## To create individualised watersheds and longest streams, we need to split the pour points into individual layers
-
-        # Split vector layer - this takes the pour points file and creates individual files for each.
-        # This is required for the watershed and longest streampath functions performed later.
-        alg_params = {
-            'FIELD': 'ID',
-            'FILE_TYPE': 1,  # shp
-            'INPUT': output_snapped_pour_points,
-            'PREFIX_FIELD': True,
-            'OUTPUT': folders['pour_points']
-        }
-        outputs['SplitVectorLayer'] = processing.run('native:splitvectorlayer', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
-        
-        if feedback.isCanceled():
-            return {}
-        self.update_progress(feedback)
-
-        # Create catchment polygons
-
-        catchment_filepaths = []
-        flowpath_filepaths = []
-        processed_ids = []
-
-        for i, feat in enumerate(snapped.getFeatures()):
-
-            value = int(feat['ID'])
-            processed_ids.append(value)
-            self.wbt.watershed(
-                output_flowdir,
-                os.path.join(folders['pour_points'],f"ID_{value}.shp"),
-                os.path.join(folders['catchments'],f"catchment_{value}.tif")
-            )
-            
-            if feedback.isCanceled():
-                return {}
-            self.update_progress(feedback)
-        
-            self.wbt.longest_flowpath(
-                output_dem,
-                os.path.join(folders['catchments'],f"catchment_{value}.tif"),
-                os.path.join(folders['stream_paths'],f"longest_flowpath_{value}.shp")
-            )
-
-            self.add_equal_area_slope(
-                os.path.join(folders['stream_paths'], f"longest_flowpath_{value}.shp"),
-                output_dem,
-                os.path.join(folders['stream_paths'], f"longest_flowpath_{value}.csv")
-            )
-
-
-            # Polygonize - convert the raster layer from whitebox into a vector.
-            alg_params = {
-                'BAND': 1,
-                'EIGHT_CONNECTEDNESS': False,
-                'EXTRA': '',
-                'FIELD': 'DN',
-                'INPUT': os.path.join(folders['catchments'],f"catchment_{value}.tif"),
-                'OUTPUT': os.path.join(folders['catchments'],f"catchment_{value}.shp")
-            }
-            outputs[f'PolygonizeRasterToVector_{value}'] = processing.run('gdal:polygonize', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
-
-            # Remove null geometries
-            alg_params = {
-                'INPUT': os.path.join(folders['catchments'],f"catchment_{value}.shp"),
-                'REMOVE_EMPTY': True,
-                'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
-            }
-            outputs[f'RemoveNullGeometries_{value}'] = processing.run('native:removenullgeometries', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
-            
-
-            # Dissolve - use this to combine any features that might have been disjointed
-            alg_params = {
-                'FIELD': [''],
-                'INPUT': outputs[f'RemoveNullGeometries_{value}']['OUTPUT'],
-                'SEPARATE_DISJOINT': False,
-                'OUTPUT': os.path.join(folders['catchments'],f"catchment_{value}.shp")
-            }
-            outputs[f'Dissolve_{value}'] = processing.run('native:dissolve', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
-            results[f"catchment_{value}"] = outputs[f'Dissolve_{value}']['OUTPUT']
-            results[f"longest_flowpath_{value}"] = os.path.join(folders['stream_paths'],f"longest_flowpath_{value}.shp")
-
-            ## Add to QGIS arrays for loading in canvas later
-            catchment_filepaths.append(outputs[f'Dissolve_{value}']['OUTPUT'])
-            flowpath_filepaths.append(os.path.join(folders['stream_paths'],f"longest_flowpath_{value}.shp"))
-
-            number_of_features = i 
-        
-            if feedback.isCanceled():
-                return {}
-            self.update_progress(feedback)
-
+        (processed_ids, catchment_filepaths, flowpath_filepaths) = self.whitebox_streams_and_catchments(context, feedback, folders, pour_points_path, dem_layer)
         log_timer("Catchments and streams generated")
 
         if feedback.isCanceled():
             return {}
         self.update_progress(feedback)
 
+        self.compute_flow_rates(context, feedback, folders, processed_ids, catchment_filepaths, flowpath_filepaths)
 
-        ## Next we take the subcatchments and perform hydrologic calculations on them
-        ## Method using RFFP 2000 method
-        ## Culvert design uses Q10 (edit - can expand this later)
-        ## Inputs required - coordinates, area, longest streampath.
-        ## Refer Design flood estimation in Western Australia by David Flavell, 2012
+        def compute_flow_rates(self, context, feedback, folders, processed_ids, catchment_filepaths, flowpath_filepaths):
+            ## Next we take the subcatchments and perform hydrologic calculations on them
+            ## Method using RFFP 2000 method
+            ## Culvert design uses Q10 (edit - can expand this later)
+            ## Inputs required - coordinates, area, longest streampath.
+            ## Refer Design flood estimation in Western Australia by David Flavell, 2012
+            area_factor = float(self.parameterAsDouble(self.parameters, PARAM_AREA_FACTOR, context)),
+
+            selected_runoff_method = self.parameterAsEnum(parameters, PARAM_RAIN_METHOD, context)  ## options=['Flavels RFFP2000 (Pilbara)' = 0,'Rational (basic, global)' = 1]
+
+            if selected_runoff_method == 0:
+                feedback.pushInfo(f'🌧️ Runoff method selected: Flavels RFFP2000 (Pilbara)')
+            elif selected_runoff_method == 1:
+                feedback.pushInfo(f'🌧️ Runoff method selected: Rational (basic, global)')
+            else:
+                feedback.pushInfo(f'🌧️ Runoff method not recognised')
+            
+
+            flow_rates_by_id = {} # store calculated flow rates in a dictionary
+        
+            for value in processed_ids:
+                if feedback.isCanceled():
+                    return {}
+
+                catchment = QgsVectorLayer(catchment_filepaths[value], "catchment", "ogr")
+
+                catchment_feature = next(catchment.getFeatures(), None)
+                if catchment_feature is None:
+                    continue
+                catchment_geometry = QgsGeometry(catchment_feature.geometry())
+                
+                area_km2 = catchment_geometry.area()/1_000_000 # convert m2 to km2
+                area_km2 = area_km2 * area_factor # 40% increase to factor for cathcment sensitivity
+                feedback.pushInfo(f'🗺️  Area for {value} is {area_km2} km2')            
+
+                catchment_centroid = catchment_geometry.centroid().asPoint()
+
+                transform_object = QgsCoordinateTransform(catchment.sourceCrs(), QgsCoordinateReferenceSystem('EPSG:4326'), QgsProject.instance())         #this is a QgsCoordinateTransform object that has a transform method
+
+                ## Convert the centroids to EPSGL4326 for lat and long extraction required for Flavells RFFP2000
+                centroid_transformed = transform_object.transform(catchment_centroid)
+                longitude = centroid_transformed.x()
+                latitude = centroid_transformed.y()
+
+                # ## Temporary lat/long that's in the pilbara region.
+                # longitude = 119
+                # latitude = 23
+
+                feedback.pushInfo(f'📍 Coordinates for {value} is LAT: {latitude} degrees, LONG: {longitude} degrees')
 
 
-        selected_runoff_method = self.parameterAsEnum(parameters, 'chosen_rainfall_analysis', context)  ## options=['Flavels RFFP2000 (Pilbara)' = 0,'Rational (basic, global)' = 1]
+                flowpath_QGIS = QgsVectorLayer(flowpath_filepaths[value], "flowpath", "ogr")
+                flowpath_feature = next(flowpath_QGIS.getFeatures())
+                if flowpath_feature is None:
+                    continue
+                # field_names = [f.name() for f in flowpath_feature.fields()]
+                # feedback.pushInfo(f"🌾 Fields found: {field_names}")
 
-        if selected_runoff_method == 0:
-            feedback.pushInfo(f'🌧️ Runoff method selected: Flavels RFFP2000 (Pilbara)')
-        else:
-            feedback.pushInfo(f'🌧️ Runoff method selected: Rational (basic, global)')
+                flowpath_slope = flowpath_feature['EAS'] * 10 # convert percent grade (1/100) to m/km (1/1000)
+                flowpath_length = flowpath_feature['LENGTH']/1000 # convert m to km
 
-        flow_rates_by_id = {} # store calculated flow rates in a dictionary
-      
-        for value in processed_ids:
+                feedback.pushInfo(f'🦦 Flow path length: {flowpath_length} km, Flow path slope: {flowpath_slope} m/km')
+
+                # FLAVELL 2012, RFFP 2000
+                Q_10 = (
+                        2.36e-34 * 
+                        (area * flowpath_slope**0.5)**0.81 * 
+                        latitude**-15.24 * longitude**26.28 * 
+                        (flowpath_length**2 / area)**-0.39
+                    )
+
+                flow_rates_by_id[int(value)] = Q_10
+                feedback.pushInfo(f'💧 Flowrate for {value} is {Q_10}\n')
+
+                self.update_progress(feedback)
+
+            log_timer("Flow rates calculated")
+
             if feedback.isCanceled():
                 return {}
-            catchment_filepath = os.path.join(folders['catchments'],f"catchment_{value}.shp")
-            longest_flowpath_filepath = os.path.join(folders['stream_paths'],f"longest_flowpath_{value}.shp")
-
-            catchment_QGIS = QgsVectorLayer(catchment_filepath, "catchment", "ogr")
-
-            catchment_feature = next(catchment_QGIS.getFeatures(), None)
-            catchment_geometry = QgsGeometry(catchment_feature.geometry())
-            
-            area = catchment_geometry.area()/1_000_000 # convert m2 to km2
-            area = area * 1.4 # 40% increase to factor for cathcment sensitivity
-            feedback.pushInfo(f'🗺️  Area for {value} is {area} km2')            
-
-            centroid = catchment_geometry.centroid().asPoint()
-
-            transform_object = QgsCoordinateTransform(catchment_QGIS.sourceCrs(), QgsCoordinateReferenceSystem('EPSG:4326'), QgsProject.instance())         #this is a QgsCoordinateTransform object that has a transform method
-
-            ## Convert the centroids to EPSGL4326 for lat and long extraction required for Flavells RFFP2000
-            centroid_transformed = transform_object.transform(centroid)
-
-            ## Edit - Uncomment later
-            # longitude = centroid_transformed.x()
-            # latitude = centroid_transformed.y()
-
-            ## Temporary lat/long that's in the pilbara region.
-            longitude = 119
-            latitude = 23
-
-            feedback.pushInfo(f'📍 Coordinates for {value} is LAT: {latitude} degrees, LONG: {longitude} degrees')
-
-            flowpath_QGIS = QgsVectorLayer(longest_flowpath_filepath, "flowpath", "ogr")
-            flowpath_feature = next(flowpath_QGIS.getFeatures())
-            field_names = [f.name() for f in flowpath_feature.fields()]
-            feedback.pushInfo(f"🌾 Fields found: {field_names}")
-
-            flowpath_slope = flowpath_feature['EAS'] * 10 # convert percent grade (1/100) to m/km (1/1000)
-            flowpath_length = flowpath_feature['LENGTH']/1000 # convert m to km
-
-            feedback.pushInfo(f'🦦 Flow path length: {flowpath_length} km, Flow path slope: {flowpath_slope} m/km')
-
-            # FLAVELL 2012, RFFP 2000
-            Q_10 = (
-                    2.36e-34 * 
-                    (area * flowpath_slope**0.5)**0.81 * 
-                    latitude**-15.24 * longitude**26.28 * 
-                    (flowpath_length**2 / area)**-0.39
-                )
-
-            flow_rates_by_id[int(value)] = Q_10
-            feedback.pushInfo(f'💧 Flowrate for {value} is {Q_10}\n')
-
             self.update_progress(feedback)
 
-        log_timer("Flow rates calculated")
-
-        if feedback.isCanceled():
-            return {}
-        self.update_progress(feedback)
-
-        ## Next use the flow rates to size culverts
-        ## Always designing for corrugated metal pipe as observed in industry
-        ## Assumes no overtopping and design will factor for high enough embankment
+            ## Next use the flow rates to size culverts
+            ## Always designing for corrugated metal pipe as observed in industry
+            ## Assumes no overtopping and design will factor for high enough embankment
 
 
         culverts.startEditing() # unlock the culvert shapefile to update the diameter
@@ -1193,3 +990,138 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         processing.run('native:extractspecificvertices', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
 
         return pour_points_path
+    
+    def whitebox_streams_and_catchments(self, context, feedback, folders, pour_points_path, dem_layer):
+        # Translate (convert format) - This ensures correct tif ready for whitebox
+        dem_tif = os.path.join(folders['whitebox'],"cleaned_dem.tif")
+        alg_params = {
+            'COPY_SUBDATASETS': False,
+            'DATA_TYPE': 0,  # Use Input Layer Data Type
+            'EXTRA': '',
+            'INPUT': dem_layer,
+            'NODATA': -9999,
+            'OPTIONS': None,
+            'TARGET_CRS': dem_layer.crs(),
+            'OUTPUT': dem_tif
+        }
+        processing.run('gdal:translate', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+
+        dem_filled = os.path.join(folders['whitebox'],"filled_dem.tif") 
+        flowdir = os.path.join(folders['whitebox'],"flow_dir.tif") 
+        flowacc = os.path.join(folders['whitebox'],"flow_acc.tif") 
+        snapped_pour_points = os.path.join(folders['pour_points'],"snapped_pour_points.shp") 
+
+        if not self.wbt.fill_depressions(dem_tif, dem_filled):
+            raise RuntimeError('WhiteboxTools fill_depressions failed')
+        if feedback.isCanceled():
+            return {}
+
+        if not self.wbt.d8_pointer(dem_filled, flowdir):
+            raise RuntimeError('WhiteboxTools d8_pointer failed')
+        if feedback.isCanceled():
+            return {}
+
+        if not self.wbt.d8_flow_accumulation(dem_filled, flowacc):
+            raise RuntimeError('WhiteboxTools d8_flow_accumulation failed')
+        if feedback.isCanceled():
+            return {}
+
+        if not self.wbt.snap_pour_points(pour_points_path, flowacc, snapped_pour_points, snap_dist= float(self.parameterAsDouble(self.parameters, PARAM_SNAP_DIST, context))):
+            raise RuntimeError('WhiteboxTools snap_pour_points failed')
+        if feedback.isCanceled():
+            return {}
+        self.update_progress(feedback)
+
+        ## To create individualised watersheds and longest streams, we need to split the pour points into individual layers
+
+        # Split vector layer - this takes the pour points file and creates individual files for each.
+        # This is required for the watershed and longest streampath functions performed later.
+        alg_params = {
+            'FIELD': 'ID',
+            'FILE_TYPE': 1,  # shp
+            'INPUT': snapped_pour_points,
+            'PREFIX_FIELD': True,
+            'OUTPUT': folders['pour_points']
+        }
+        processing.run('native:splitvectorlayer', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+        
+        if feedback.isCanceled():
+            return {}
+        self.update_progress(feedback)
+
+        # Create catchment polygons
+
+        pour_points = QgsVectorLayer(snapped_pour_points, 'pour_points', 'ogr')
+
+        processed_ids = []
+        catchment_filepaths = []
+        flowpath_filepaths = []
+
+        for i, feat in enumerate(pour_points.getFeatures()):
+            value = int(feat['ID'])
+            processed_ids.append(value)
+            pour_point_path = os.path.join(folders['pour_points'],f"pour_point_{value}.shp")
+            watershed_tif_path = os.path.join(folders['catchments'],f"catchment_{value}.tif")
+            watershed_shp_path = os.path.join(folders['catchments'],f"catchment_{value}.shp")
+            longest_flowpath_shp_path = os.path.join(folders['stream_paths'],f"longest_flowpath_{value}.shp")
+            longest_flowpath_csv_path = os.path.join(folders['stream_paths'], f"longest_flowpath_{value}.csv")
+
+            self.wbt.watershed(
+                flowdir,
+                pour_point_path,
+                watershed_tif_path
+            )
+            
+            if feedback.isCanceled():
+                return {}
+            self.update_progress(feedback)
+        
+            self.wbt.longest_flowpath(
+                dem_filled,
+                watershed_tif_path,
+                longest_flowpath_shp_path
+            )
+
+            if feedback.isCanceled():
+                return {}
+            self.update_progress(feedback)
+
+            self.add_equal_area_slope(
+                longest_flowpath_shp_path,
+                dem_filled,
+                longest_flowpath_csv_path
+            )
+
+            # Polygonize - convert the raster layer from whitebox into a vector.
+            alg_params = {
+                'BAND': 1,
+                'EIGHT_CONNECTEDNESS': False,
+                'EXTRA': '',
+                'FIELD': 'DN',
+                'INPUT': watershed_tif_path,
+                'OUTPUT': watershed_shp_path
+            }
+            processing.run('gdal:polygonize', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+
+            # Remove null geometries
+            alg_params = {
+                'INPUT': watershed_shp_path,
+                'REMOVE_EMPTY': True,
+                'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+            }
+            temp = processing.run('native:removenullgeometries', alg_params, context=context, feedback=feedback, is_child_algorithm=True)['OUTPUT']
+            
+            # Dissolve - use this to combine any features that might have been disjointed
+            alg_params = {
+                'FIELD': [''],
+                'INPUT': temp,
+                'SEPARATE_DISJOINT': False,
+                'OUTPUT': watershed_shp_path
+            }
+            processing.run('native:dissolve', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
+
+            ## Add to QGIS arrays for loading in canvas later
+            catchment_filepaths.append(watershed_shp_path)
+            flowpath_filepaths.append(longest_flowpath_shp_path)
+
+            return processed_ids, catchment_filepaths, flowpath_filepaths
