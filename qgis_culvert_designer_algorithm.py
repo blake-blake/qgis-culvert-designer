@@ -266,7 +266,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
 
     def processAlgorithm(self, parameters, context, feedback):
         """
-        Here is where the processing itself takes place.
+        Here is where the processing itself takes place. This is called by QGIS.
         """
 
         if sys.stdout is None:
@@ -1009,7 +1009,6 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
                 feedback.pushInfo(f'🌧️ Runoff method not recognised')
 
             self.log(feedback, f"🗺️ ID {value}: Area={area_km2:.3f} km², L={flowpath_length:.3f} km, S={flowpath_slope:.2f} m/km → Q={flow_rates_by_id[int(value)]:.4f}")
-            # feedback.pushInfo(f"🗺️ ID {value}: Area={area_km2:.3f} km², L={flowpath_length:.3f} km, S={flowpath_slope:.2f} m/km → Q={flow_rates_by_id[int(value)]:.4f}")
             self.update_progress(feedback)
 
         return flow_rates_by_id
