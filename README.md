@@ -20,12 +20,16 @@
 
 To use this plugin, it is required to first install PCRaster and WhiteboxTools.
 
-It is recommended to utilise a [conda virtual environment](https://docs.conda.io/en/latest/) to achieve this. 
+It is recommended to utilise a [conda virtual environment](https://docs.conda.io/en/latest/) to achieve this on MacOS.
 
 Please refer to [PCRaster Install Guide](https://pcraster.geo.uu.nl/pcraster/4.4.2/documentation/pcraster_project/install.html) and [PCRaster on conda-forge](https://anaconda.org/conda-forge/pcraster)
 
 Along with 
 [WhiteboxTools Install Guide](https://www.whiteboxgeo.com/manual/wbt_book/python_scripting/scripting.html) and [Whitebox on conda-forge](https://anaconda.org/conda-forge/whitebox)
+
+It is recommended to utilise OSGeo4W to achieve this on Windows OS. 
+Select PCRaster on advanced install.
+Use `python -m pip install whitebox` on OSGeo4W Shell
 
 
 ---
