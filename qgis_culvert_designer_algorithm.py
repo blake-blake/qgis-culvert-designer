@@ -27,6 +27,7 @@ __date__ = '2025-07-21'
 __copyright__ = '(C) 2025-2026 by Blake Hillwood'
 
 
+from email.policy import default
 import shutil
 import os
 import inspect
@@ -254,7 +255,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
 
         ## Hidden output folder
         out_folder = QgsProcessingParameterFolderDestination(
-                'catchments_output',
+                OUT_CATCHMENTS_FOLDER,
                 'Catchments Folder'
         )
         out_folder.setFlags(out_folder.flags() | QgsProcessingParameterDefinition.FlagHidden)
@@ -274,7 +275,6 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         feedback = QgsProcessingMultiStepFeedback(self.total_steps, feedback)
         
         results = {}
-        outputs = {}
 
         ## Use time logs to track and test speed of processing
         start_time = pytime.time() # start timer
@@ -314,7 +314,6 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
 
         ## Create flow direction map
         ldd_output_path = self.create_ldd(parameters, context, feedback, folders, dem_pcr_map_path)
-
         log_timer("Flow direction map creation")
 
         if feedback.isCanceled():
@@ -349,222 +348,24 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
             return {}
         self.update_progress(feedback)
 
-        self.compute_flow_rates(context, feedback, folders, processed_ids, catchment_filepaths, flowpath_filepaths)
+        flow_rates_by_id = self.compute_flow_rates(context, feedback, processed_ids, catchment_filepaths, flowpath_filepaths)
+        log_timer("Flow rates calculated")
 
-        def compute_flow_rates(self, context, feedback, folders, processed_ids, catchment_filepaths, flowpath_filepaths):
-            ## Next we take the subcatchments and perform hydrologic calculations on them
-            ## Method using RFFP 2000 method
-            ## Culvert design uses Q10 (edit - can expand this later)
-            ## Inputs required - coordinates, area, longest streampath.
-            ## Refer Design flood estimation in Western Australia by David Flavell, 2012
-            area_factor = float(self.parameterAsDouble(self.parameters, PARAM_AREA_FACTOR, context)),
+        if feedback.isCanceled():
+            return {}
+        self.update_progress(feedback)
 
-            selected_runoff_method = self.parameterAsEnum(parameters, PARAM_RAIN_METHOD, context)  ## options=['Flavels RFFP2000 (Pilbara)' = 0,'Rational (basic, global)' = 1]
-
-            if selected_runoff_method == 0:
-                feedback.pushInfo(f'🌧️ Runoff method selected: Flavels RFFP2000 (Pilbara)')
-            elif selected_runoff_method == 1:
-                feedback.pushInfo(f'🌧️ Runoff method selected: Rational (basic, global)')
-            else:
-                feedback.pushInfo(f'🌧️ Runoff method not recognised')
-            
-
-            flow_rates_by_id = {} # store calculated flow rates in a dictionary
-        
-            for value in processed_ids:
-                if feedback.isCanceled():
-                    return {}
-
-                catchment = QgsVectorLayer(catchment_filepaths[value], "catchment", "ogr")
-
-                catchment_feature = next(catchment.getFeatures(), None)
-                if catchment_feature is None:
-                    continue
-                catchment_geometry = QgsGeometry(catchment_feature.geometry())
-                
-                area_km2 = catchment_geometry.area()/1_000_000 # convert m2 to km2
-                area_km2 = area_km2 * area_factor # 40% increase to factor for cathcment sensitivity
-                feedback.pushInfo(f'🗺️  Area for {value} is {area_km2} km2')            
-
-                catchment_centroid = catchment_geometry.centroid().asPoint()
-
-                transform_object = QgsCoordinateTransform(catchment.sourceCrs(), QgsCoordinateReferenceSystem('EPSG:4326'), QgsProject.instance())         #this is a QgsCoordinateTransform object that has a transform method
-
-                ## Convert the centroids to EPSGL4326 for lat and long extraction required for Flavells RFFP2000
-                centroid_transformed = transform_object.transform(catchment_centroid)
-                longitude = centroid_transformed.x()
-                latitude = centroid_transformed.y()
-
-                # ## Temporary lat/long that's in the pilbara region.
-                # longitude = 119
-                # latitude = 23
-
-                feedback.pushInfo(f'📍 Coordinates for {value} is LAT: {latitude} degrees, LONG: {longitude} degrees')
-
-
-                flowpath_QGIS = QgsVectorLayer(flowpath_filepaths[value], "flowpath", "ogr")
-                flowpath_feature = next(flowpath_QGIS.getFeatures())
-                if flowpath_feature is None:
-                    continue
-                # field_names = [f.name() for f in flowpath_feature.fields()]
-                # feedback.pushInfo(f"🌾 Fields found: {field_names}")
-
-                flowpath_slope = flowpath_feature['EAS'] * 10 # convert percent grade (1/100) to m/km (1/1000)
-                flowpath_length = flowpath_feature['LENGTH']/1000 # convert m to km
-
-                feedback.pushInfo(f'🦦 Flow path length: {flowpath_length} km, Flow path slope: {flowpath_slope} m/km')
-
-                # FLAVELL 2012, RFFP 2000
-                Q_10 = (
-                        2.36e-34 * 
-                        (area * flowpath_slope**0.5)**0.81 * 
-                        latitude**-15.24 * longitude**26.28 * 
-                        (flowpath_length**2 / area)**-0.39
-                    )
-
-                flow_rates_by_id[int(value)] = Q_10
-                feedback.pushInfo(f'💧 Flowrate for {value} is {Q_10}\n')
-
-                self.update_progress(feedback)
-
-            log_timer("Flow rates calculated")
-
-            if feedback.isCanceled():
-                return {}
-            self.update_progress(feedback)
-
-            ## Next use the flow rates to size culverts
-            ## Always designing for corrugated metal pipe as observed in industry
-            ## Assumes no overtopping and design will factor for high enough embankment
-
-
-        culverts.startEditing() # unlock the culvert shapefile to update the diameter
-
-        for value in processed_ids:
-            if feedback.isCanceled():
-                return {}
-            Q = flow_rates_by_id[int(value)]
-            # D_array = [0.6,0.9,1.2,1.8,2.4,3.2] # standard culvert dia options
-            D_array = [3.2,2.4,1.8,1.2,0.9,0.6]
-
-            ## --- For inlet control --- #
-            # For Thin Edge Projecting Inlet - Table 1, HY-8 Equation 1 (HY-8 User Manual / FHWA HDS-5)
-            # Inlet type - straight, projecting, circular corrugated metal pipe
-            # All constants for that inlet type
-            a = 0.187321 
-            b = 0.56771 
-            c = -0.156544 
-            d = 0.0447052 
-            e = -0.00343602 
-            f = 8.96610e-05
-            KE = 0.9
-            SR = 0.5
-
-            ## --- For outlet control --- ##
-            Ku = 29 # Constant provided by HDS-5
-            n = 0.024 # mannings n of corrugated steel pipe
-            g = 9.81 # gravity
-
-            for culvert in culverts.getFeatures(f"ID={value}"): #filter by 'ID'
-                L = culvert['Len_or_ANA']
-                us_invert = culvert['US_Invert']
-                ds_invert = culvert['DS_Invert']
-                Ls = us_invert - ds_invert # (m) Drop in height from inlet to outlet
-            
-
-            Hw_ratio_max = 0 
-            Chosen_D = 0
-
-
-            for D in D_array:
-                if feedback.isCanceled():
-                    return {}
-                
-                ## ---- INLET CONTROL CALCULATION ---- ##
-                B = D # in the case of a circular culvert
-                QBD = Q/(B*D**1.5)
-
-                # HY-8 Polynomial Generation
-
-                Hw_ic = (a + b*QBD + c*QBD**2 + d*QBD**3 + e*QBD**4 + f*QBD**5 )*D
-
-                feedback.pushInfo(f'🌊 Inlet control headwater ratio for {value} with a {D}m dia. barrel is {Hw_ic/D}')
-
-
-
-                ## ---- OUTLET CONTROL CALCULATION ---- ##
-                # Equation 3.5 and 3.6 in FHWA HDS-5
-                A = math.pi * D**2 / 4 # Area
-                P = math.pi*D # Wetted Perimeter
-                Tw = D # Tailwater - assume this to be either 0 m or equal to pipe height
-                
-                V = Q / A
-                R = A / P
-                
-                He = KE* V**2 / (2*g) # Entrance loss - Equation 3.4a
-
-                Hf = (Ku * n**2 * L / R**1.33) * V**2 / 2 / 9.81 # Friction loss - Equation 3.4b
-
-                Ho = V**2 / (2*g) # Exit loss - Equation 3.4d
-
-                Hl = He + Hf + Ho # Equation 3.1
-
-                Hw_oc = Tw + Hl - Ls # Equation 3.6b
-
-                feedback.pushInfo(f'🌊 Outlet control headwater ratio for {value} with a {D}m dia. barrel is {Hw_oc/D}')
-
-                ## ---- ASSIGNING VALUES ---- ##
-
-                if Hw_ic > Hw_oc:
-                    feedback.pushInfo(f'Inlet controlled\n')
-                    
-                    if Hw_ic/D < 1.5 and Hw_ic/D > Hw_ratio_max: #1.5 is the upper limit of allowable Hw/D ratio
-                            Hw_ratio_max = Hw_ic/D
-                            Chosen_D = D
-
-                else:
-                    feedback.pushInfo(f'Oulet controlled\n')
-                    
-                    if Hw_oc/D < 1.5 and Hw_oc/D > Hw_ratio_max: #1.5 is the upper limit of allowable Hw/D ratio
-                        Hw_ratio_max = Hw_oc/D
-                        Chosen_D = D
-
-                self.update_progress(feedback)
-
-            feedback.pushInfo(f'⭕️ Chosen diameter: {Chosen_D}m with headwater ratio of {Hw_ratio_max}\n')
-
-            for culvert in culverts.getFeatures(f"ID={value}"): #filter by 'ID'
-                culvert['Width_or_D'] = float(Chosen_D)
-                culvert['Number_of'] = int(1) ## use this to update this later for multi barrel configurations
-                culverts.updateFeature(culvert)
-
-
-        culverts.commitChanges()
-
+        culvert_network_sized = self.size_culverts_HDS5(context, feedback, processed_ids, culvert_network_empty, flow_rates_by_id)
         log_timer("Culverts designed")
 
         if feedback.isCanceled():
             return {}
         self.update_progress(feedback)
 
+        if bool(self.parameterAsBool(parameters, PARAM_ADD_TO_PROJECT, context)):
+            self.add_to_project(catchment_filepaths, flowpath_filepaths, culvert_network_sized)
 
-        ## VISUALISATION IN CANVAS
-
-        # ADD CATCHMENTS
-        for filepath in catchment_filepaths:
-            QgsProject.instance().addMapLayer(QgsVectorLayer(filepath, os.path.basename(filepath), "ogr"))
-
-        # ADD FLOWPATHS
-        for filepath in flowpath_filepaths:
-            QgsProject.instance().addMapLayer(QgsVectorLayer(filepath, os.path.basename(filepath), "ogr"))
-
-        # ADD CULVERTS
-        QgsProject.instance().addMapLayer(culverts)
-
-
-
-        results['catchments_output'] = folders['catchments']
-
+        results = {OUT_CATCHMENTS_FOLDER, folders['catchments']}
         return results
 
 
@@ -645,7 +446,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         feat = next(vlayer.getFeatures(), None)
 
         if feat is not None:
-            feat['EAS'] = ea_value
+            feat['EAS'] = eas_value
             vlayer.updateFeature(feat)
 
         vlayer.commitChanges()
@@ -758,7 +559,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
 
         # Filter and seperate out strahler order maps, save each to disk for later review if required
         for order in range(1, max_strahler_value + 1):
-            stream = ifthen(strahler >= order, boolean (1)) #filter out each stream order from 1 to the maximum stream order
+            stream = pcr.ifthen(strahler >= order, pcr.boolean (1)) #filter out each stream order from 1 to the maximum stream order
             pcr.report(stream, os.path.join(folders['strahler'], 'stream'+str(order)+'.map')) # save to file 
             if feedback.isCanceled():
                 return {}
@@ -817,6 +618,8 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         ## Therefore, we need to merge any points that are in a practical sense 'next to each other'
         ## This is done by creating a buffer, joining the buffer and finding the centroid of the new shape.
         ## This creates a new point in the middle of the previous intersects to approximate a single inlet location.]
+
+        outputs = {}
 
         # Buffer
         alg_params = {
@@ -878,6 +681,9 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         ## This is done with a buffer - it assumes that inlets and outlets will be closer together at a distance equal to approximately the road width.
         road_width = float(self.parameterAsDouble(self.parameters(), PARAM_ROAD_WIDTH, context))
         # Buffer2
+        
+        outputs = {}
+
         alg_params = {
             'DISSOLVE': False,
             'DISTANCE': road_width/2 + 10,  # 10m buffer to improve grouping and variance in batters etc.
@@ -1125,3 +931,181 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
             flowpath_filepaths.append(longest_flowpath_shp_path)
 
             return processed_ids, catchment_filepaths, flowpath_filepaths
+        
+    def compute_flow_rates(self, context, feedback, processed_ids, catchment_filepaths, flowpath_filepaths):
+        ## Next we take the subcatchments and perform hydrologic calculations on them
+        ## Method using RFFP 2000 method
+        ## Culvert design uses Q10 (edit - can expand this later)
+        ## Inputs required - coordinates, area, longest streampath.
+        ## Refer Design flood estimation in Western Australia by David Flavell, 2012
+        area_factor = float(self.parameterAsDouble(self.parameters, PARAM_AREA_FACTOR, context)),
+
+        selected_runoff_method = self.parameterAsEnum(self.parameters, PARAM_RAIN_METHOD, context)  ## options=['Flavels RFFP2000 (Pilbara)' = 0,'Rational (basic, global)' = 1]
+
+        if selected_runoff_method == 0:
+            feedback.pushInfo(f'🌧️ Runoff method selected: Flavels RFFP2000 (Pilbara)')
+        elif selected_runoff_method == 1:
+            feedback.pushInfo(f'🌧️ Runoff method selected: Rational (basic, global)')
+        else:
+            feedback.pushInfo(f'🌧️ Runoff method not recognised')
+        
+
+        flow_rates_by_id = {} # store calculated flow rates in a dictionary
+    
+        for value in processed_ids:
+            if feedback.isCanceled():
+                return {}
+
+            # Catchment Area (km2)
+            catchment = QgsVectorLayer(catchment_filepaths[value], "catchment", "ogr")
+            catchment_feature = next(catchment.getFeatures(), None)
+            if catchment_feature is None:
+                continue
+            catchment_geometry = QgsGeometry(catchment_feature.geometry())
+            area_km2 = catchment_geometry.area()/1_000_000 # convert m2 to km2
+            area_km2 = area_km2 * area_factor # 40% increase to factor for cathcment sensitivity
+            feedback.pushInfo(f'🗺️  Area for {value} is {area_km2} km2')
+
+            # Catchement Centroid lat & long
+            catchment_centroid = catchment_geometry.centroid().asPoint()
+            transform_object = QgsCoordinateTransform(catchment.sourceCrs(), QgsCoordinateReferenceSystem('EPSG:4326'), QgsProject.instance())         #this is a QgsCoordinateTransform object that has a transform method
+            centroid_transformed = transform_object.transform(catchment_centroid) # Convert the centroids to EPSGL4326 for lat and long extraction required for Flavells RFFP2000
+            longitude = centroid_transformed.x()
+            latitude = centroid_transformed.y()
+            feedback.pushInfo(f'📍 Coordinates for {value} is LAT: {latitude} degrees, LONG: {longitude} degrees')
+
+            # Associating Flow Path slope and length
+            flowpath_QGIS = QgsVectorLayer(flowpath_filepaths[value], "flowpath", "ogr")
+            flowpath_feature = next(flowpath_QGIS.getFeatures())
+            if flowpath_feature is None:
+                continue
+            flowpath_slope = flowpath_feature['EAS'] * 10 # convert percent grade (1/100) to m/km (1/1000)
+            flowpath_length = flowpath_feature['LENGTH']/1000 # convert m to km
+
+            if selected_runoff_method == 0:
+                # FLAVELL 2012, RFFP 2000
+                Q_10 = (
+                    2.36e-34 
+                    * (area_km2 * (flowpath_slope**0.5))**0.81 
+                    * (latitude**-15.24) * (longitude**26.28) 
+                    * ((flowpath_length**2 )/ area_km2)**-0.39
+                )
+                flow_rates_by_id[int(value)] = Q_10
+            elif selected_runoff_method == 1:
+                # Rational Method Placeholder
+                feedback.pushInfo(f'🌧️ Rational Method Not Configured')
+
+            else:
+                # Default
+                feedback.pushInfo(f'🌧️ Runoff method not recognised')
+
+            feedback.pushInfo(f"🗺️ ID {value}: Area={area_km2:.3f} km², L={flowpath_length:.3f} km, S={flowpath_slope:.2f} m/km → Q={flow_rates_by_id[int(value)]:.4f}")
+            self.update_progress(feedback)
+
+        return flow_rates_by_id
+    
+    def size_culverts_HDS5(self, context, feedback, processed_ids, culvert_network, flow_rates_by_id):
+        ## Next use the flow rates to size culverts
+        ## Always designing for corrugated metal pipe as observed in industry
+        ## Assumes no overtopping and design will factor for high enough embankment
+
+        if not culvert_network.isEditable():
+            culvert_network.startEditing() # unlock the culvert shapefile to update the diameter
+
+        defaults = DesignParams()
+        pipe_diameters = defaults.pipe_diameters_m
+        headwater_limit = self.parameterAsDouble(self.parameters, PARAM_HEADWATER_LIMIT, context)
+
+        ## --- For inlet control --- #
+        # For Thin Edge Projecting Inlet - Table 1, HY-8 Equation 1 (HY-8 User Manual / FHWA HDS-5)
+        # Inlet type - straight, projecting, circular corrugated metal pipe
+        # All constants for that inlet type
+        a = 0.187321 
+        b = 0.56771 
+        c = -0.156544 
+        d = 0.0447052 
+        e = -0.00343602 
+        f = 8.96610e-05
+        KE = 0.9
+        SR = 0.5
+
+        ## --- For outlet control --- ##
+        Ku = 29 # Constant provided by HDS-5
+        n = defaults.mannings_n # mannings n of corrugated steel pipe
+        g = 9.81 # gravity
+
+        for value in processed_ids:
+            if feedback.isCanceled():
+                return {}
+            Q = flow_rates_by_id[int(value)]
+            
+            for culvert in culvert_network.getFeatures(f"ID={value}"): #filter by 'ID'
+                L = culvert['Len_or_ANA']
+                us_invert = culvert['US_Invert']
+                ds_invert = culvert['DS_Invert']
+                Ls = us_invert - ds_invert # (m) Drop in height from inlet to outlet
+            
+                best_Hw_ratio = -1 
+                chosen_pipe_diameter = -1
+
+                for D in pipe_diameters:
+                    if feedback.isCanceled():
+                        return {}
+                    
+                    ## ---- INLET CONTROL CALCULATION ---- ##
+                    B = D # in the case of a circular culvert
+                    QBD = Q/(B*(D**1.5))
+                    Hw_ic = (a + b*QBD + c*QBD**2 + d*QBD**3 + e*QBD**4 + f*QBD**5 )*D # HY-8 Polynomial Generation
+                    feedback.pushInfo(f'🌊 Inlet control headwater ratio for {value} with a {D}m dia. barrel is {Hw_ic/D}')
+
+                    ## ---- OUTLET CONTROL CALCULATION ---- ##
+                    # Equation 3.5 and 3.6 in FHWA HDS-5
+                    A = math.pi * D**2 / 4 # Area
+                    P = math.pi*D # Wetted Perimeter
+                    V = Q / A
+                    R = A / P
+                    He = KE* V**2 / (2*g) # Entrance loss - Equation 3.4a
+                    Hf = (Ku * (n**2) * L / (R**1.33)) * (V**2) / (2*9.81) # Friction loss - Equation 3.4b
+                    Ho = V**2 / (2*g) # Exit loss - Equation 3.4d
+                    Hl = He + Hf + Ho # Equation 3.1
+                    Tw = D # Tailwater - assume this to be either 0 m or equal to pipe height
+                    Hw_oc = Tw + Hl - Ls # Equation 3.6b
+                    feedback.pushInfo(f'🌊 Outlet control headwater ratio for {value} with a {D}m dia. barrel is {Hw_oc/D}')
+
+                    ## ---- ASSIGNING VALUES ---- ##
+                    if Hw_ic > Hw_oc:
+                        feedback.pushInfo(f'Inlet controlled\n')
+                        
+                        if Hw_ic/D < headwater_limit and Hw_ic/D > best_Hw_ratio: #1.5 is the upper limit of allowable Hw/D ratio
+                                best_Hw_ratio = Hw_ic/D
+                                chosen_pipe_diameter = D
+
+                    else:
+                        feedback.pushInfo(f'Oulet controlled\n')
+                        
+                        if Hw_oc/D < headwater_limit and Hw_oc/D > best_Hw_ratio: #1.5 is the upper limit of allowable Hw/D ratio
+                            best_Hw_ratio = Hw_oc/D
+                            chosen_pipe_diameter = D
+
+                    self.update_progress(feedback)
+
+                culvert['Width_or_D'] = float(chosen_pipe_diameter)
+                culvert['Number_of'] = int(1) ## use this to update this later for multi barrel configurations
+                culvert_network.updateFeature(culvert)
+                feedback.pushInfo(f'⭕️ Chosen diameter: {chosen_pipe_diameter}m with headwater ratio of {best_Hw_ratio}\n')
+
+        culvert_network.commitChanges()
+
+        return culvert_network
+    
+
+    def add_to_project(self, catchment_filepaths, flowpath_filepaths, culvert_network_sized):
+        ## VISUALISATION IN CANVAS
+        # ADD CATCHMENTS
+        for filepath in catchment_filepaths:
+            QgsProject.instance().addMapLayer(QgsVectorLayer(filepath, os.path.basename(filepath), "ogr"))
+        # ADD FLOWPATHS
+        for filepath in flowpath_filepaths:
+            QgsProject.instance().addMapLayer(QgsVectorLayer(filepath, os.path.basename(filepath), "ogr"))
+        # ADD CULVERTS
+        QgsProject.instance().addMapLayer(culvert_network_sized)
