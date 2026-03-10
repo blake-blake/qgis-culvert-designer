@@ -57,7 +57,7 @@ From there, navigate to python → plugins
     * Your project data elevation model in GeoTiff format
     * A vector that represents the batter toes of a road alignment in Esri shapefile format
 2. Start the plugin
-3. Select **base folder directory** for outpurs
+3. Select **base folder directory** for outputs
 4. Select **DEM and Road**
 5. Select **desired strahler order** to define major streams
 6. Input approximate **road width** (used to group culvert inlets with outlets)
