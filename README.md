@@ -7,7 +7,7 @@
 
 ## Algorithm overview
 
-- **Automaitc Catchment Delineation and stream extraction** utilising PCRaster and WhiteboxTools  
+- **Automatic Catchment Delineation and stream extraction** utilising PCRaster and WhiteboxTools  
 - **Longest Flow Path & Equal-Area Slope Calculation**  
 - **Rainfall run-off estimation** using Flavells RFFP2000  
 - **Culvert Sizing** utilising FHWA HDS-5 based equations
