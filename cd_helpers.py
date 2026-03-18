@@ -15,8 +15,10 @@ from qgis.core import (
 import processing
 
 # External libs used in your original code
-import pcraster as pcr
 from whitebox import WhiteboxTools
+import rasterio
+import numpy as np
+
 
 # ----------------------------
 # Constants & Params
@@ -42,10 +44,10 @@ def initialise_folders(base_folder: str) -> dict:
         "catchments": os.path.join(base_folder, "Whitebox", "Catchments"),
         "pour_points": os.path.join(base_folder, "Whitebox", "PourPoints"),
         "stream_paths": os.path.join(base_folder, "Whitebox", "StreamPaths"),
-        "pcraster": os.path.join(base_folder, "PCRaster"),
+        # "pcraster": os.path.join(base_folder, "PCRaster"),
         "qgis": os.path.join(base_folder, "QGISIntermediates"),
-        "lddcreate": os.path.join(base_folder, "PCRaster", "Lddcreate"),
-        "strahler": os.path.join(base_folder, "PCRaster", "StrahlerOrders"),
+        "lddcreate": os.path.join(base_folder, "Whitebox", "flowdirection"),
+        "streams": os.path.join(base_folder, "Whitebox", "StreamsNetwork"),
         "culvert": os.path.join(base_folder, "CulvertNetwork")
     }
     for f in folders.values():
@@ -80,57 +82,77 @@ def prepare_inputs(context, feedback, folders: dict, dem_layer, road_layer=None)
         out = processing.run('native:reprojectlayer', alg_params, context=context, feedback=feedback, is_child_algorithm=True)
         road_layer = out['OUTPUT']
 
-    pcr_map = os.path.join(folders['pcraster'], 'pcraster_dem.map')
-    processing.run('pcraster:converttopcrasterformat',
-                   {'INPUT': dem_layer, 'INPUT2': 3, 'OUTPUT': pcr_map},
+    
+    # Export DEM to clean TIF for Whitebox
+    dem_clean_tif = os.path.join(folders["whitebox"], "dem_clean.tif")
+    processing.run(
+        'gdal:translate',
+        {
+            'COPY_SUBDATASETS': False,
+            'DATA_TYPE': 0,
+            'EXTRA': '',
+            'INPUT': dem_layer,
+            'NODATA': -9999,
+            'OPTIONS': None,
+            'TARGET_CRS': dem_layer.crs(),
+            'OUTPUT': dem_clean_tif,
+        },
+        context=context, feedback=feedback, is_child_algorithm=True
+    )
+
+    return dem_layer, road_layer, dem_clean_tif
+
+
+
+# ============================================================
+# WHITEBOX HYDROLOGY
+# ============================================================
+def whitebox_flow_preparation(context, feedback, dem_layer: str, folders: dict):
+    """
+    Run Whitebox:
+    - fill depressions
+    - D8 pointer
+    - D8 flow accumulation
+    - Strahler order
+    """
+    dem_clean_tif = os.path.join(folders['whitebox'], "cleaned_dem.tif")
+    processing.run('gdal:translate',
+                   {'COPY_SUBDATASETS': False, 'DATA_TYPE': 0, 'EXTRA': '', 'INPUT': dem_layer,
+                    'NODATA': -9999, 'OPTIONS': None, 'TARGET_CRS': dem_layer.crs(), 'OUTPUT': dem_clean_tif},
                    context=context, feedback=feedback, is_child_algorithm=True)
+    
+    wbt = WhiteboxTools()
+    wbt.set_verbose_mode(True)
 
-    return dem_layer, road_layer, pcr_map
+    dem_filled = os.path.join(folders["whitebox"], "wbt_filled_dem.tif")
+    flowdir = os.path.join(folders["whitebox"], "wbt_flow_dir.tif")
+    flowacc = os.path.join(folders["whitebox"], "wbt_flow_acc.tif")
+    streams = os.path.join(folders["whitebox"], "wbt_streams.tif")
 
-# ----------------------------
-# PCRaster stream order
-# ----------------------------
-def create_ldd(context, feedback, folders, dem_pcr_map_path: str, existing_ldd: str):
-    ldd_out = os.path.join(folders['lddcreate'], 'lddcreate.map')
-    existing_ldd = (existing_ldd or "").strip()
-    if existing_ldd:
-        src = Path(existing_ldd)
-        dst = Path(ldd_out)
-        if not src.exists():
-            raise QgsProcessingException(f"Existing LDD not found: {src}")
-        if src.resolve() != dst.resolve():
-            shutil.copy(existing_ldd, ldd_out)
-    else:
-        processing.run('pcraster:lddcreate',
-                       {
-                           'INPUT': dem_pcr_map_path,
-                           'INPUT0': 0,
-                           'INPUT1': 0,  # Map units
-                           'INPUT2': 9999999,
-                           'INPUT3': 9999999,
-                           'INPUT4': 9999999,
-                           'INPUT5': 9999999,
-                           'OUTPUT': ldd_out
-                       },
-                       context=context, feedback=feedback, is_child_algorithm=True)
-    return ldd_out
+    wbt.fill_depressions(dem_clean_tif, dem_filled)
+    wbt.d8_pointer(dem_filled, flowdir)
+    wbt.d8_flow_accumulation(dem_filled, flowacc)
+    wbt.extract_streams(flowacc, streams)
 
-def create_streamorder(context, feedback, folders, ldd_map_path: str):
-    strahler_map = os.path.join(folders['pcraster'], 'strahler_order.map')
-    processing.run('pcraster:streamorder',
-                   {'INPUT': ldd_map_path, 'OUTPUT': strahler_map},
-                   context=context, feedback=feedback, is_child_algorithm=True)
+    # Determine maximum Strahler order
+    with rasterio.open(streams) as src:
+        arr = src.read(1)
+        max_order = int(np.nanmax(arr))
 
-    # build per-order maps
-    pcr.setclone(strahler_map)
-    strahler = pcr.readmap(strahler_map)
-    max_strahler_raster = pcr.mapmaximum(strahler)
-    max_value = int(pcr.cellvalue(max_strahler_raster, 0, 0)[0])
+    # Create per-order threshold rasters
+    for n in range(1, max_order + 1):
+        out_bin = os.path.join(folders["streams"], f"stream{n}.tif")
+        # values >= n become 1, else 0
+        wbt.reclass(
+            i=streams,
+            output=out_bin,
+            reclass_vals=f"{n}-99999;1;0"
+        )
 
-    for order in range(1, max_value + 1):
-        stream = pcr.ifthen(strahler >= order, pcr.boolean(1))
-        pcr.report(stream, os.path.join(folders['strahler'], f'stream{order}.map'))
-    return max_value
+    return dem_filled, flowdir, flowacc, streams, max_order
+
+
+
 
 # ----------------------------
 # Intersections & culvert scaffolding
