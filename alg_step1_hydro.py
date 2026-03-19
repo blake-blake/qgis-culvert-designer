@@ -9,8 +9,7 @@ from qgis.core import (
 import processing
 from .alg_base import BaseAlgo, read_manifest, write_manifest, add_to_project
 from .cd_helpers import (
-    initialise_folders, prepare_inputs, create_ldd, create_streamorder,
-    whitebox_prepare, delineate_for_pour_points
+    initialise_folders, prepare_inputs, whitebox_flow_preparation, delineate_for_pour_points
 )
 
 class Step1_Hydro(BaseAlgo):
@@ -20,7 +19,8 @@ class Step1_Hydro(BaseAlgo):
     def groupId(self): return ''
     def createInstance(self): return Step1_Hydro()
 
-    P_BASE="base_folder"; P_DEM="dem"; P_EXIST="existing_ldd_map"
+    P_BASE="base_folder"; P_DEM="dem"; 
+    P_EXIST="existing_ldd_map"
     P_POUR="pour_points"; P_SNAP="snap_distance"; P_ADD="load_outputs"
 
     def initAlgorithm(self, config):
@@ -45,20 +45,26 @@ class Step1_Hydro(BaseAlgo):
         do_add = bool(self.parameterAsBool(parameters, self.P_ADD, context))
 
         folders = initialise_folders(base)
-        dem_layer, _, pcr_map = prepare_inputs(context, feedback, folders, dem, None)
-        ldd = create_ldd(context, feedback, folders, pcr_map, existing_ldd)
-        max_order = create_streamorder(context, feedback, folders, ldd)
+        _, _, dem_clean_tif = prepare_inputs(context, feedback, folders, dem, None)
+        
+        # Always prepare whitebox rasters (fill, dir, acc)
+        dem_filled, flowdir, flowacc, strahler, max_order = whitebox_flow_preparation(context, feedback, dem_clean_tif, folders)
+        
+        # ldd = create_ldd(context, feedback, folders, pcr_map, existing_ldd)
+        # max_order = create_streamorder(context, feedback, folders, ldd)
 
         produced = {
             "base_folder": base,
             "dem": dem.source(),
-            "lddcreate": ldd,
-            "max_strahler": int(max_order)
+            # "lddcreate": ldd,
+            "max_strahler": int(max_order),
+            "filled_dem": dem_filled, 
+            "flow_dir": flowdir, 
+            "flow_acc": flowacc
         }
 
-        # Always prepare whitebox rasters (fill, dir, acc)
-        dem_filled, flowdir, flowacc = whitebox_prepare(context, feedback, folders, dem_layer)
-        produced.update({"filled_dem": dem_filled, "flow_dir": flowdir, "flow_acc": flowacc})
+        # dem_filled, flowdir, flowacc = whitebox_prepare(context, feedback, folders, dem_layer)
+        # produced.update({"filled_dem": dem_filled, "flow_dir": flowdir, "flow_acc": flowacc})
 
         # Optional: if pour points provided, run delineation now
         if pour_src:

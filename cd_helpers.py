@@ -16,8 +16,8 @@ import processing
 
 # External libs used in your original code
 from whitebox import WhiteboxTools
-import rasterio
-import numpy as np
+# import rasterio
+# import numpy as np
 
 
 # ----------------------------
@@ -107,7 +107,7 @@ def prepare_inputs(context, feedback, folders: dict, dem_layer, road_layer=None)
 # ============================================================
 # WHITEBOX HYDROLOGY
 # ============================================================
-def whitebox_flow_preparation(context, feedback, dem_layer: str, folders: dict):
+def whitebox_flow_preparation(dem_clean_tif: str, folders: dict):
     """
     Run Whitebox:
     - fill depressions
@@ -115,11 +115,11 @@ def whitebox_flow_preparation(context, feedback, dem_layer: str, folders: dict):
     - D8 flow accumulation
     - Strahler order
     """
-    dem_clean_tif = os.path.join(folders['whitebox'], "cleaned_dem.tif")
-    processing.run('gdal:translate',
-                   {'COPY_SUBDATASETS': False, 'DATA_TYPE': 0, 'EXTRA': '', 'INPUT': dem_layer,
-                    'NODATA': -9999, 'OPTIONS': None, 'TARGET_CRS': dem_layer.crs(), 'OUTPUT': dem_clean_tif},
-                   context=context, feedback=feedback, is_child_algorithm=True)
+    # dem_clean_tif = os.path.join(folders['whitebox'], "cleaned_dem.tif")
+    # processing.run('gdal:translate',
+    #                {'COPY_SUBDATASETS': False, 'DATA_TYPE': 0, 'EXTRA': '', 'INPUT': dem_layer,
+    #                 'NODATA': -9999, 'OPTIONS': None, 'TARGET_CRS': dem_layer.crs(), 'OUTPUT': dem_clean_tif},
+    #                context=context, feedback=feedback, is_child_algorithm=True)
     
     wbt = WhiteboxTools()
     wbt.set_verbose_mode(True)
@@ -132,24 +132,24 @@ def whitebox_flow_preparation(context, feedback, dem_layer: str, folders: dict):
     wbt.fill_depressions(dem_clean_tif, dem_filled)
     wbt.d8_pointer(dem_filled, flowdir)
     wbt.d8_flow_accumulation(dem_filled, flowacc)
-    wbt.extract_streams(flowacc, streams)
+    wbt.extract_streams(flowacc, streams, threshold=50_000)  # TODO: make threshold a parameter or auto-determine based on area_factor and pipe sizes 
 
-    # Determine maximum Strahler order
-    with rasterio.open(streams) as src:
-        arr = src.read(1)
-        max_order = int(np.nanmax(arr))
+    # # Determine maximum Strahler order
+    # with rasterio.open(streams) as src:
+    #     arr = src.read(1)
+    #     max_order = int(np.nanmax(arr))
 
-    # Create per-order threshold rasters
-    for n in range(1, max_order + 1):
-        out_bin = os.path.join(folders["streams"], f"stream{n}.tif")
-        # values >= n become 1, else 0
-        wbt.reclass(
-            i=streams,
-            output=out_bin,
-            reclass_vals=f"{n}-99999;1;0"
-        )
+    # # Create per-order threshold rasters
+    # for n in range(1, max_order + 1):
+    #     out_bin = os.path.join(folders["streams"], f"stream{n}.tif")
+    #     # values >= n become 1, else 0
+    #     wbt.reclass(
+    #         i=streams,
+    #         output=out_bin,
+    #         reclass_vals=f"{n}-99999;1;0"
+    #     )
 
-    return dem_filled, flowdir, flowacc, streams, max_order
+    return dem_filled, flowdir, flowacc, streams
 
 
 
@@ -164,6 +164,21 @@ def find_road_intersections(context, feedback, folders, stream_map_path: str, ro
                    {'BAND': 1, 'EIGHT_CONNECTEDNESS': False, 'EXTRA': None, 'FIELD': 'DN',
                     'INPUT': stream_map_path, 'OUTPUT': poly_stream},
                    context=context, feedback=feedback, is_child_algorithm=True)
+
+    
+    # processing.run("native:polygonize",
+    #     {
+    #         "INPUT": stream_raster,
+    #         "BAND": 1,
+    #         "FIELD": "DN",
+    #         "EIGHT_CONNECTEDNESS": False,
+    #         "OUTPUT": poly_stream
+    #     },
+    #     context=context,
+    #     feedback=feedback,
+    #     is_child_algorithm=True
+    #     )
+
 
     # intersection
     inter_lines = os.path.join(folders['qgis'], 'intersections_line.shp')
@@ -277,30 +292,12 @@ def extract_pour_points(context, feedback, folders, culvert_network_layer_or_pat
     else:
         v = culvert_network_layer_or_path
 
-    out_pp = os.path.join(folders['pcraster'], 'pour_points.shp')
+    out_pp = os.path.join(folders['pour_points'], 'pour_points.shp')
     processing.run('native:extractspecificvertices',
                    {'INPUT': v, 'VERTICES': '0', 'OUTPUT': out_pp},
                    context=context, feedback=feedback, is_child_algorithm=True)
     return out_pp
 
-# ----------------------------
-# Whitebox prep & delineation
-# ----------------------------
-def whitebox_prepare(context, feedback, folders, dem_layer):
-    dem_tif = os.path.join(folders['whitebox'], "cleaned_dem.tif")
-    processing.run('gdal:translate',
-                   {'COPY_SUBDATASETS': False, 'DATA_TYPE': 0, 'EXTRA': '', 'INPUT': dem_layer,
-                    'NODATA': -9999, 'OPTIONS': None, 'TARGET_CRS': dem_layer.crs(), 'OUTPUT': dem_tif},
-                   context=context, feedback=feedback, is_child_algorithm=True)
-    wbt = WhiteboxTools()
-    wbt.set_verbose_mode(True)
-    dem_filled = os.path.join(folders['whitebox'], "filled_dem.tif")
-    flowdir = os.path.join(folders['whitebox'], "flow_dir.tif")
-    flowacc = os.path.join(folders['whitebox'], "flow_acc.tif")
-    wbt.fill_depressions(dem_tif, dem_filled)
-    wbt.d8_pointer(dem_filled, flowdir)
-    wbt.d8_flow_accumulation(dem_filled, flowacc)
-    return dem_filled, flowdir, flowacc
 
 def add_equal_area_slope(line_layer_path: str, dem_path: str, csv_filepath: str):
     """

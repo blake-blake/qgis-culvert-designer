@@ -61,21 +61,23 @@ class CulvertDesignerPlugin(object):
     def initGui(self):
         self.initProcessing()
 
-        def add_btn(text, alg_id, icon = 'icon.jpg'):
-             action = QAction(
+        def add_btn(text, alg_id, icon = 'icon.jpg', if_toolbar_icon=False):
+            action = QAction(
                 QIcon(os.path.join(cmd_folder, icon)),
                 text, self.iface.mainWindow())
-             action.triggered.connect(lambda: processing.execAlgorithmDialog(alg_id))
-             self.iface.addPluginToMenu(u"Culvert Designer", action)
-             self.iface.addToolBarIcon(action)
-             self.actions.append(action)
+            action.triggered.connect(lambda: processing.execAlgorithmDialog(alg_id))
+            self.iface.addPluginToMenu(u"Culvert Designer", action)
+            if if_toolbar_icon:
+                self.iface.addToolBarIcon(action)
+            self.actions.append(action)
 
 
         add_btn("Step 1: Hydrology", "CulvertDesign:step1_hydro")
         add_btn("Step 2: Culvert network extraction", "CulvertDesign:step2_culvert_network")
         add_btn("Step 3: Flow‑rate calculation", "CulvertDesign:step3_flowrates")
         add_btn("Step 4: Culvert sizing & 1d_nwk update", "CulvertDesign:step4_sizeculverts")
-        add_btn("Run full Culvert Designer workflow", "CulvertDesign:culvert_designer")
+        add_btn("Run full Culvert Designer workflow", "CulvertDesign:culvert_designer", if_toolbar_icon=True)
+     
      
 
     def unload(self):

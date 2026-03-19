@@ -78,12 +78,9 @@ from .cd_helpers import (DesignParams,
                         RAIN_METHODS,
                         initialise_folders,
                         prepare_inputs,
-                        create_ldd,
-                        create_streamorder,
                         find_road_intersections,
                         create_culvert_network,
-                        extract_pour_points,
-                        whitebox_prepare,
+                        extract_pour_points, whitebox_flow_preparation,
                         delineate_for_pour_points,
                         compute_flow_rates,
                         size_culverts_HDS5
@@ -342,7 +339,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         self.update_progress(feedback)
 
         ##  Prepare the inputs
-        (dem_layer, road_layer, dem_pcr_map_path) = prepare_inputs(context, feedback, folders, dem_layer, road_layer)
+        dem_layer, road_layer, dem_clean_tif = prepare_inputs(context, feedback, folders, dem_layer, road_layer)
         log_timer("Initialised project")
 
         # delete ## parameters['catchments_output'] = folders['catchments'] #use this to open all the catchment files on completion
@@ -352,7 +349,9 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         self.update_progress(feedback)
 
         ## Create flow direction map
-        ldd_output_path = create_ldd(context, feedback, folders, dem_pcr_map_path, existing_ldd)
+        # ldd_output_path = create_ldd(context, feedback, folders, dem_pcr_map_path, existing_ldd)
+        dem_filled, flowdir, flowacc, streams = whitebox_flow_preparation(dem_clean_tif, folders)
+
         log_timer("Flow direction map creation")
 
         if feedback.isCanceled():
@@ -360,19 +359,19 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
         self.update_progress(feedback)
 
         ## Create strahler maps
-        max_strahler_value = create_streamorder(context, feedback, folders, ldd_output_path)
+        # max_strahler_value = create_streamorder(context, feedback, folders, ldd_output_path)
 
         ## Select user defined strahler map for use
         # User provided stream order threshold
-        threshold_order = int(self.parameterAsInt(parameters, PARAM_THRESHOLD_ORDER, context))
+        # threshold_order = int(self.parameterAsInt(parameters, PARAM_THRESHOLD_ORDER, context))
 
-        if threshold_order > max_strahler_value:
-            threshold_order = max_strahler_value
-            feedback.pushInfo(f'Chosen threshold was above maximum, using maximum of {max_strahler_value} instead.')
+        # if threshold_order > max_strahler_value:
+        #     threshold_order = max_strahler_value
+        #     feedback.pushInfo(f'Chosen threshold was above maximum, using maximum of {max_strahler_value} instead.')
 
-        chosen_stream_map= os.path.join(folders['strahler'],'stream'+str(threshold_order)+'.map')
+        # chosen_stream_map= os.path.join(folders['strahler'],'stream'+str(threshold_order)+'.map')
                 
-        road_intersections = find_road_intersections(context, feedback, folders, chosen_stream_map, road_layer)
+        road_intersections = find_road_intersections(context, feedback, folders, streams, road_layer)
         
         culvert_network_path = create_culvert_network(context, feedback, folders, dem_layer, road_intersections, road_width)
         culvert_network_empty = QgsVectorLayer(culvert_network_path, "1d_nwk", "ogr")
@@ -380,7 +379,6 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
 
         pour_points_path = extract_pour_points(context, feedback, folders, culvert_network_empty)
 
-        dem_filled, flowdir, flowacc = whitebox_prepare(context, feedback, folders, dem_layer)
         processed_ids, catchment_filepaths, flowpath_filepaths = delineate_for_pour_points(context, feedback, folders, pour_points_path, dem_filled, flowdir, flowacc, snap_dist)
         log_timer("Catchments and streams generated")
 
