@@ -31,10 +31,19 @@ __copyright__ = '(C) 2025 by Blake Hillwood'
 __revision__ = '$Format:%H$'
 
 from qgis.core import QgsProcessingProvider
-from .qgis_culvert_designer_algorithm import CulvertDesignerAlgorithm
 import os
 import inspect
 from qgis.PyQt.QtGui import QIcon
+
+# Import algorithms
+from .alg_base import BaseAlgo, read_manifest, write_manifest, add_to_project
+from .alg_step1_hydro import Step1_Hydro
+from .alg_step2_culvert_network import Step2_CulvertNetwork
+from .alg_step3_flowrates import Step3_FlowRates
+from .alg_step4_size_culverts import Step4_SizeCulverts
+
+from .qgis_culvert_designer_algorithm import CulvertDesignerAlgorithm
+
 
 
 class CulvertDesignerProvider(QgsProcessingProvider):
@@ -56,9 +65,14 @@ class CulvertDesignerProvider(QgsProcessingProvider):
         """
         Loads all algorithms belonging to this provider.
         """
+        self.addAlgorithm(Step1_Hydro())
+        self.addAlgorithm(Step2_CulvertNetwork())  
+        self.addAlgorithm(Step3_FlowRates())
+        self.addAlgorithm(Step4_SizeCulverts())
+
+        # All in one option
         self.addAlgorithm(CulvertDesignerAlgorithm())
-        # add additional algorithms here
-        # self.addAlgorithm(MyOtherAlgorithm())
+        
 
     def id(self):
         """

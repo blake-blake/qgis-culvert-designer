@@ -34,16 +34,14 @@ import os
 import sys
 import inspect
 
-from qgis.core import QgsProcessingAlgorithm, QgsApplication
-from .qgis_culvert_designer_provider import CulvertDesignerProvider
+from qgis.core import QgsApplication
 from qgis.PyQt.QtWidgets import QAction
 from qgis.PyQt.QtGui import QIcon
-
-from qgis.core import QgsProcessingAlgorithm, QgsApplication
 import processing
 
-cmd_folder = os.path.split(inspect.getfile(inspect.currentframe()))[0]
+from .qgis_culvert_designer_provider import CulvertDesignerProvider
 
+cmd_folder = os.path.split(inspect.getfile(inspect.currentframe()))[0]
 if cmd_folder not in sys.path:
     sys.path.insert(0, cmd_folder)
 
@@ -53,6 +51,7 @@ class CulvertDesignerPlugin(object):
     def __init__(self, iface):
         self.provider = None
         self.iface = iface
+        self.actions = []
 
     def initProcessing(self):
         """Init Processing provider for QGIS >= 3.8."""
@@ -62,18 +61,31 @@ class CulvertDesignerPlugin(object):
     def initGui(self):
         self.initProcessing()
 
-        icon = os.path.join(os.path.join(cmd_folder, 'icon.jpg'))
-        self.action = QAction(
-            QIcon(icon),
-            u"Culvert Designer", self.iface.mainWindow())
-        self.action.triggered.connect(self.run)
-        self.iface.addPluginToMenu(u"Culvert Designer", self.action)
-        self.iface.addToolBarIcon(self.action)
+        def add_btn(text, alg_id, icon = 'icon.jpg', if_toolbar_icon=False):
+            action = QAction(
+                QIcon(os.path.join(cmd_folder, icon)),
+                text, self.iface.mainWindow())
+            action.triggered.connect(lambda: processing.execAlgorithmDialog(alg_id))
+            self.iface.addPluginToMenu(u"Culvert Designer", action)
+            if if_toolbar_icon:
+                self.iface.addToolBarIcon(action)
+            self.actions.append(action)
+
+
+        add_btn("Step 1: Hydrology", "CulvertDesign:step1_hydro")
+        add_btn("Step 2: Culvert network extraction", "CulvertDesign:step2_culvert_network")
+        add_btn("Step 3: Flow‑rate calculation", "CulvertDesign:step3_flowrates")
+        add_btn("Step 4: Culvert sizing & 1d_nwk update", "CulvertDesign:step4_sizeculverts")
+        add_btn("Run full Culvert Designer workflow", "CulvertDesign:culvert_designer", if_toolbar_icon=True)
+     
+     
 
     def unload(self):
-        QgsApplication.processingRegistry().removeProvider(self.provider)
-        self.iface.removePluginMenu(u"Culvert Designer", self.action)
-        self.iface.removeToolBarIcon(self.action)
+        if self.provider:
+             QgsApplication.processingRegistry().removeProvider(self.provider)
+        for action in self.actions:
+            self.iface.removePluginMenu(u"Culvert Designer", action)
+            self.iface.removeToolBarIcon(action)
 
     def run(self):
         processing.execAlgorithmDialog("CulvertDesign:culvert_designer")
