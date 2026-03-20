@@ -147,65 +147,14 @@ def whitebox_flow_preparation(dem_clean_tif: str, folders: dict):
 # ----------------------------
 # Intersections & culvert scaffolding
 # ----------------------------
-def find_road_intersections(context, feedback, folders, stream_map_path: str, road_layer):
-    # polygonize stream raster
-    poly_stream = os.path.join(folders['qgis'], 'Polygonized_StreamPath.shp')
-    processing.run('gdal:polygonize',
-                   {'BAND': 1, 'EIGHT_CONNECTEDNESS': False, 'EXTRA': None, 'FIELD': 'DN',
-                    'INPUT': stream_map_path, 'OUTPUT': poly_stream},
-                   context=context, feedback=feedback, is_child_algorithm=True)
 
-    
-    
-    # processing.run("native:polygonize",
-    #     {
-    #         "INPUT": stream_raster,
-    #         "BAND": 1,
-    #         "FIELD": "DN",
-    #         "EIGHT_CONNECTEDNESS": False,
-    #         "OUTPUT": poly_stream
-    #     },
-    #     context=context,
-    #     feedback=feedback,
-    #     is_child_algorithm=True
-    #     )
+def find_road_intersections(context, feedback, folders,stream_vector, road_layer):
+    intersections = os.path.join(folders['qgis'], 'intersections.shp')
+    processing.run('native:lineintersections', 
+                   {'INPUT': road_layer, 'INTERSECT': stream_vector, 'OUTPUT': intersections},
+                    context=context, feedback=feedback, is_child_algorithm=True)
 
-
-    # intersection
-    inter_lines = os.path.join(folders['qgis'], 'intersections_line.shp')
-    processing.run('native:intersection',
-                   {'GRID_SIZE': None, 'INPUT': road_layer, 'INPUT_FIELDS': [''],
-                    'OVERLAY': poly_stream, 'OVERLAY_FIELDS': [''],
-                    'OVERLAY_FIELDS_PREFIX': None, 'OUTPUT': inter_lines},
-                   context=context, feedback=feedback, is_child_algorithm=True)
-
-    # convert line→point (centroids)
-    inter_points = os.path.join(folders['qgis'], 'intersections_point.shp')
-    processing.run('native:centroids',
-                   {'ALL_PARTS': False, 'INPUT': inter_lines, 'OUTPUT': inter_points},
-                   context=context, feedback=feedback, is_child_algorithm=True)
-
-    # merge duplicates by buffering, dissolving, centroid
-    buf = processing.run('native:buffer',
-                         {'DISSOLVE': False, 'DISTANCE': 1, 'END_CAP_STYLE': 2,
-                          'INPUT': inter_points, 'JOIN_STYLE': 0, 'MITER_LIMIT': 2,
-                          'SEGMENTS': 5, 'SEPARATE_DISJOINT': False,
-                          'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT},
-                         context=context, feedback=feedback, is_child_algorithm=True)['OUTPUT']
-    dis = processing.run('native:dissolve',
-                         {'FIELD': [''], 'INPUT': buf, 'SEPARATE_DISJOINT': True,
-                          'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT},
-                         context=context, feedback=feedback, is_child_algorithm=True)['OUTPUT']
-    cen = processing.run('native:centroids',
-                         {'ALL_PARTS': True, 'INPUT': dis, 'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT},
-                         context=context, feedback=feedback, is_child_algorithm=True)['OUTPUT']
-
-    merged_points = os.path.join(folders['qgis'], 'inlets_and_outlets.shp')
-    processing.run('native:deleteduplicategeometries',
-                   {'INPUT': cen, 'OUTPUT': merged_points},
-                   context=context, feedback=feedback, is_child_algorithm=True)
-
-    return merged_points
+    return intersections
 
 def create_culvert_network(context, feedback, folders, dem_layer, road_intersections_path: str, road_width_m: float):
     # group inlets/outlets within approx road width

@@ -5,8 +5,7 @@ from qgis.core import (
     QgsProcessingParameterFile, QgsProcessingParameterRasterLayer,
         QgsProcessingParameterBoolean)
 
-# import os # delete
-# import processing # delete
+
 from .alg_base import BaseAlgo, read_manifest, write_manifest, add_to_project
 from .cd_helpers import (
     initialise_folders, prepare_inputs, whitebox_flow_preparation
@@ -14,6 +13,7 @@ from .cd_helpers import (
 '''
 Step 1: Hydrology prep & stream network creation
 - Inputs: DEM (1–5 m)
+- Outputs: stream network (vector)
 '''
 class Step1_Hydro(BaseAlgo):
     def name(self): return "step1_hydro"
