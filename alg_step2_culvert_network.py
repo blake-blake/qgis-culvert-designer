@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # alg_step2_culvert_network.py
 from qgis.core import (
-    QgsProcessingParameterFile, QgsProcessingParameterFeatureSource,
+    QgsProcessingParameterFile, QgsProcessingParameterVectorLayer,
     QgsProcessingParameterRasterLayer, QgsProcessingParameterNumber,
     QgsProcessingParameterBoolean, QgsProcessing
 )
@@ -23,7 +23,7 @@ class Step2_CulvertNetwork(BaseAlgo):
     def initAlgorithm(self, config):
         self.addParameter(QgsProcessingParameterFile(self.P_BASE, self.tr("Base folder"),
                                                      behavior=QgsProcessingParameterFile.Folder))
-        self.addParameter(QgsProcessingParameterFeatureSource(self.P_ROAD, self.tr("Road batter toes"), [QgsProcessing.TypeVectorAnyGeometry]))
+        self.addParameter(QgsProcessingParameterVectorLayer(self.P_ROAD, self.tr("Road batter toes"), [QgsProcessing.TypeVectorAnyGeometry]))
         self.addParameter(QgsProcessingParameterRasterLayer(self.P_DEM, self.tr("DEM")))
         self.addParameter(QgsProcessingParameterRasterLayer(self.P_STREAM, self.tr("Chosen stream map (binary)")))
         self.addParameter(QgsProcessingParameterNumber(self.P_W, self.tr("Approx. road width (m)"),
@@ -32,7 +32,7 @@ class Step2_CulvertNetwork(BaseAlgo):
 
     def processAlgorithm(self, parameters, context, feedback):
         base = self.parameterAsFile(parameters, self.P_BASE, context)
-        road = self.parameterAsSource(parameters, self.P_ROAD, context)
+        road = self.parameterAsVectorLayer(parameters, self.P_ROAD, context)
         dem = self.parameterAsRasterLayer(parameters, self.P_DEM, context)
         stream = self.parameterAsRasterLayer(parameters, self.P_STREAM, context)
         roadw = float(self.parameterAsDouble(parameters, self.P_W, context))

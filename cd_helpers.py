@@ -132,7 +132,11 @@ def whitebox_flow_preparation(dem_clean_tif: str, folders: dict):
     wbt.fill_depressions(dem_clean_tif, dem_filled)
     wbt.d8_pointer(dem_filled, flowdir)
     wbt.d8_flow_accumulation(dem_filled, flowacc)
-    wbt.extract_streams(flowacc, streams, threshold=50_000)  # TODO: make threshold a parameter or auto-determine based on area_factor and pipe sizes 
+    wbt.extract_streams(flowacc, streams, threshold=80_000)  # TODO: make threshold a parameter or auto-determine based on area_factor and pipe sizes 
+
+    poly_stream_2 = os.path.join(folders['qgis'], 'Polygonized_StreamPath_wbt.shp')
+    wbt.raster_streams_to_vector(streams, flowdir, poly_stream_2)
+
 
     # # Determine maximum Strahler order
     # with rasterio.open(streams) as src:
@@ -165,6 +169,7 @@ def find_road_intersections(context, feedback, folders, stream_map_path: str, ro
                     'INPUT': stream_map_path, 'OUTPUT': poly_stream},
                    context=context, feedback=feedback, is_child_algorithm=True)
 
+    
     
     # processing.run("native:polygonize",
     #     {
@@ -379,7 +384,7 @@ def delineate_for_pour_points(context, feedback, folders, pour_points_path: str,
         catchment_paths.append(ws_shp)
         flowpath_paths.append(flow_shp)
 
-    return processed_ids, catchment_paths, flowpath_paths
+    return processed_ids, catchment_paths, flowpath_paths, snapped_pp
 
 # ----------------------------
 # Hydrology: flow rates
