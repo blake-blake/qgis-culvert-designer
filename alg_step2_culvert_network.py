@@ -44,6 +44,39 @@ class Step2_CulvertNetwork(BaseAlgo):
         nwk = create_culvert_network(context, feedback, folders, dem_layer, inout, roadw)
         pp = extract_pour_points(context, feedback, folders, nwk)
 
+
+
+        # Optional: if pour points provided, run delineation now
+        if pour_src:
+            # Save pour points to file for whitebox (ensure it has an 'ID' field)
+            # If not, create a temp autoincrement ID
+            src_layer = QgsVectorLayer(pour_src.source(), "pour_points", "ogr")
+            if src_layer.fields().indexOf('ID') == -1:
+                saved = processing.run('native:addautoincrementalfield',
+                                       {'FIELD_NAME':'ID','GROUP_FIELDS':[''],'INPUT':src_layer,'MODULUS':0,
+                                        'SORT_ASCENDING':True,'SORT_EXPRESSION':None,'SORT_NULLS_FIRST':False,
+                                        'START':0,'OUTPUT': os.path.join(folders['pour_points'], 'provided_pour_points.shp')},
+                                       context=context, feedback=feedback, is_child_algorithm=True)['OUTPUT']
+                pour_path = saved
+            else:
+                pour_path = os.path.join(folders['pour_points'], 'provided_pour_points.shp')
+                processing.run('native:savefeatures',
+                               {'INPUT': src_layer, 'OUTPUT': pour_path, 'LAYER_NAME': 'pour_points'},
+                               context=context, feedback=feedback, is_child_algorithm=True)
+
+            ids, catchments, flowpaths, snapped_pp = delineate_for_pour_points(
+                context, feedback, folders, pour_path, dem_filled, flowdir, flowacc, snap
+            )
+            produced.update({
+                "processed_ids": ids,
+                "catchments": catchments,
+                "flowpaths": flowpaths,
+                "snapped_pour_points": snapped_pp
+            })
+            if do_add:
+                add_to_project(catchments + flowpaths)
+
+
         produced = {"inlets_outlets": inout, "culvert_network": nwk, "pour_points": pp}
         write_manifest(base, produced)
         if do_add:

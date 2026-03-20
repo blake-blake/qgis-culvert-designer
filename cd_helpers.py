@@ -14,10 +14,8 @@ from qgis.core import (
 )
 import processing
 
-# External libs used in your original code
 from whitebox import WhiteboxTools
-# import rasterio
-# import numpy as np
+
 
 
 # ----------------------------
@@ -113,47 +111,28 @@ def whitebox_flow_preparation(dem_clean_tif: str, folders: dict):
     - fill depressions
     - D8 pointer
     - D8 flow accumulation
-    - Strahler order
+    - Stream raster
+    - Polygonize stream raster
     """
-    # dem_clean_tif = os.path.join(folders['whitebox'], "cleaned_dem.tif")
-    # processing.run('gdal:translate',
-    #                {'COPY_SUBDATASETS': False, 'DATA_TYPE': 0, 'EXTRA': '', 'INPUT': dem_layer,
-    #                 'NODATA': -9999, 'OPTIONS': None, 'TARGET_CRS': dem_layer.crs(), 'OUTPUT': dem_clean_tif},
-    #                context=context, feedback=feedback, is_child_algorithm=True)
     
     wbt = WhiteboxTools()
+    # Override the executable to a wrapper to hide pop ups
+    wbt.exe_path = os.path.join(os.path.dirname(__file__), "whitebox_tools_noconsole.vbs")
     wbt.set_verbose_mode(True)
 
     dem_filled = os.path.join(folders["whitebox"], "wbt_filled_dem.tif")
     flowdir = os.path.join(folders["whitebox"], "wbt_flow_dir.tif")
     flowacc = os.path.join(folders["whitebox"], "wbt_flow_acc.tif")
     streams = os.path.join(folders["whitebox"], "wbt_streams.tif")
+    poly_stream = os.path.join(folders['qgis'], 'Polygonized_StreamPath_wbt.shp')
 
     wbt.fill_depressions(dem_clean_tif, dem_filled)
     wbt.d8_pointer(dem_filled, flowdir)
     wbt.d8_flow_accumulation(dem_filled, flowacc)
     wbt.extract_streams(flowacc, streams, threshold=80_000)  # TODO: make threshold a parameter or auto-determine based on area_factor and pipe sizes 
+    wbt.raster_streams_to_vector(streams, flowdir, poly_stream)
 
-    poly_stream_2 = os.path.join(folders['qgis'], 'Polygonized_StreamPath_wbt.shp')
-    wbt.raster_streams_to_vector(streams, flowdir, poly_stream_2)
-
-
-    # # Determine maximum Strahler order
-    # with rasterio.open(streams) as src:
-    #     arr = src.read(1)
-    #     max_order = int(np.nanmax(arr))
-
-    # # Create per-order threshold rasters
-    # for n in range(1, max_order + 1):
-    #     out_bin = os.path.join(folders["streams"], f"stream{n}.tif")
-    #     # values >= n become 1, else 0
-    #     wbt.reclass(
-    #         i=streams,
-    #         output=out_bin,
-    #         reclass_vals=f"{n}-99999;1;0"
-    #     )
-
-    return dem_filled, flowdir, flowacc, streams
+    return dem_filled, flowdir, flowacc, streams, poly_stream
 
 
 

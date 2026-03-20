@@ -14,7 +14,7 @@ from .cd_helpers import (
 
 class Step1_Hydro(BaseAlgo):
     def name(self): return "step1_hydro"
-    def displayName(self): return self.tr("Step 1 – Hydrology prep & (optional) catchments/streams")
+    def displayName(self): return self.tr("Step 1 – Hydrology prep & create empty 1d_nwk")
     def group(self): return self.tr(self.groupId())
     def groupId(self): return ''
     def createInstance(self): return Step1_Hydro()
@@ -27,32 +27,30 @@ class Step1_Hydro(BaseAlgo):
         self.addParameter(QgsProcessingParameterFile(self.P_BASE, self.tr("Base folder"),
                                                      behavior=QgsProcessingParameterFile.Folder))
         self.addParameter(QgsProcessingParameterRasterLayer(self.P_DEM, self.tr("DEM (1–5 m)")))
-        self.addParameter(QgsProcessingParameterFile(self.P_EXIST, self.tr("Existing lddcreate.map (optional)"),
-                                                     behavior=QgsProcessingParameterFile.File, optional=True,
-                                                     fileFilter="PCRaster MAP (*.map)"))
-        self.addParameter(QgsProcessingParameterVectorLayer(self.P_POUR, self.tr("Pour points (optional)"),
-                                                              [QgsProcessing.TypeVectorPoint], optional=True))
-        self.addParameter(QgsProcessingParameterNumber(self.P_SNAP, self.tr("Snap distance (cells)"),
-                                                       QgsProcessingParameterNumber.Double, defaultValue=2.0, minValue=0.0))
+        # self.addParameter(QgsProcessingParameterFile(self.P_EXIST, self.tr("Existing lddcreate.map (optional)"),
+        #                                              behavior=QgsProcessingParameterFile.File, optional=True,
+        #                                              fileFilter="PCRaster MAP (*.map)"))
+        # self.addParameter(QgsProcessingParameterVectorLayer(self.P_POUR, self.tr("Pour points (optional)"),
+        #                                                       [QgsProcessing.TypeVectorPoint], optional=True))
+        # self.addParameter(QgsProcessingParameterNumber(self.P_SNAP, self.tr("Snap distance (cells)"),
+        #                                                QgsProcessingParameterNumber.Double, defaultValue=2.0, minValue=0.0))
         self.addParameter(QgsProcessingParameterBoolean(self.P_ADD, self.tr("Load outputs to project?"), defaultValue=True))
 
     def processAlgorithm(self, parameters, context, feedback):
         base = self.parameterAsFile(parameters, self.P_BASE, context)
         dem = self.parameterAsRasterLayer(parameters, self.P_DEM, context)
         # existing_ldd = (self.parameterAsFile(parameters, self.P_EXIST, context) or "").strip()
-        pour_src = self.parameterAsVectorLayer(parameters, self.P_POUR, context)
-        snap = float(self.parameterAsDouble(parameters, self.P_SNAP, context))
+        # pour_src = self.parameterAsVectorLayer(parameters, self.P_POUR, context)
+        # snap = float(self.parameterAsDouble(parameters, self.P_SNAP, context))
         do_add = bool(self.parameterAsBool(parameters, self.P_ADD, context))
 
         folders = initialise_folders(base)
         _, _, dem_clean_tif = prepare_inputs(context, feedback, folders, dem, None)
         
         # Always prepare whitebox rasters (fill, dir, acc)
-        dem_filled, flowdir, flowacc, _ = whitebox_flow_preparation(dem_clean_tif, folders)
+        dem_filled, flowdir, flowacc, _, poly_streams = whitebox_flow_preparation(dem_clean_tif, folders)
         
-        # ldd = create_ldd(context, feedback, folders, pcr_map, existing_ldd)
-        # max_order = create_streamorder(context, feedback, folders, ldd)
-
+        
         produced = {
             "base_folder": base,
             "dem": dem.source(),
@@ -63,38 +61,8 @@ class Step1_Hydro(BaseAlgo):
             "flow_acc": flowacc
         }
 
-        # dem_filled, flowdir, flowacc = whitebox_prepare(context, feedback, folders, dem_layer)
-        # produced.update({"filled_dem": dem_filled, "flow_dir": flowdir, "flow_acc": flowacc})
-
-        # Optional: if pour points provided, run delineation now
-        if pour_src:
-            # Save pour points to file for whitebox (ensure it has an 'ID' field)
-            # If not, create a temp autoincrement ID
-            src_layer = QgsVectorLayer(pour_src.source(), "pour_points", "ogr")
-            if src_layer.fields().indexOf('ID') == -1:
-                saved = processing.run('native:addautoincrementalfield',
-                                       {'FIELD_NAME':'ID','GROUP_FIELDS':[''],'INPUT':src_layer,'MODULUS':0,
-                                        'SORT_ASCENDING':True,'SORT_EXPRESSION':None,'SORT_NULLS_FIRST':False,
-                                        'START':0,'OUTPUT': os.path.join(folders['pour_points'], 'provided_pour_points.shp')},
-                                       context=context, feedback=feedback, is_child_algorithm=True)['OUTPUT']
-                pour_path = saved
-            else:
-                pour_path = os.path.join(folders['pour_points'], 'provided_pour_points.shp')
-                processing.run('native:savefeatures',
-                               {'INPUT': src_layer, 'OUTPUT': pour_path, 'LAYER_NAME': 'pour_points'},
-                               context=context, feedback=feedback, is_child_algorithm=True)
-
-            ids, catchments, flowpaths, snapped_pp = delineate_for_pour_points(
-                context, feedback, folders, pour_path, dem_filled, flowdir, flowacc, snap
-            )
-            produced.update({
-                "processed_ids": ids,
-                "catchments": catchments,
-                "flowpaths": flowpaths,
-                "snapped_pour_points": snapped_pp
-            })
-            if do_add:
-                add_to_project(catchments + flowpaths)
+        add_to_project([poly_streams] if do_add else [])
+        
 
         write_manifest(base, produced)
         return produced
