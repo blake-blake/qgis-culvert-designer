@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 # cd_helpers.py
+import subprocess
 import os, io, sys, math, shutil, csv, inspect
 from pathlib import Path
 from dataclasses import dataclass
@@ -44,7 +45,7 @@ def initialise_folders(base_folder: str) -> dict:
         "stream_paths": os.path.join(base_folder, "Whitebox", "StreamPaths"),
         # "pcraster": os.path.join(base_folder, "PCRaster"),
         "qgis": os.path.join(base_folder, "QGISIntermediates"),
-        "lddcreate": os.path.join(base_folder, "Whitebox", "flowdirection"),
+        # "lddcreate": os.path.join(base_folder, "Whitebox", "flowdirection"),
         "streams": os.path.join(base_folder, "Whitebox", "StreamsNetwork"),
         "culvert": os.path.join(base_folder, "CulvertNetwork")
     }
@@ -100,7 +101,16 @@ def prepare_inputs(context, feedback, folders: dict, dem_layer, road_layer=None)
 
     return dem_layer, road_layer, dem_clean_tif
 
+def setup_whitebox():
+    wbt = WhiteboxTools()
+    # Override the executable with a wrapper to hide pop ups
+    # wbt.exe_path = os.path.join(os.path.dirname(__file__), "whitebox_tools.exe")
+    runner = os.path.join(os.path.dirname(__file__), "whitebox_runner.py")
+    wbt.exe_path = runner
+    wbt.set_verbose_mode(True)
+    wbt.set_default_callback(lambda x: None)
 
+    return wbt
 
 # ============================================================
 # WHITEBOX HYDROLOGY
@@ -115,24 +125,21 @@ def whitebox_flow_preparation(dem_clean_tif: str, folders: dict):
     - Polygonize stream raster
     """
     
-    wbt = WhiteboxTools()
-    # Override the executable to a wrapper to hide pop ups
-    wbt.exe_path = os.path.join(os.path.dirname(__file__), "whitebox_tools_noconsole.vbs")
-    wbt.set_verbose_mode(True)
+    wbt = setup_whitebox()
 
     dem_filled = os.path.join(folders["whitebox"], "wbt_filled_dem.tif")
     flowdir = os.path.join(folders["whitebox"], "wbt_flow_dir.tif")
     flowacc = os.path.join(folders["whitebox"], "wbt_flow_acc.tif")
     streams = os.path.join(folders["whitebox"], "wbt_streams.tif")
-    poly_stream = os.path.join(folders['qgis'], 'Polygonized_StreamPath_wbt.shp')
+    streams_vector = os.path.join(folders["whitebox"], "wbt_streams_vector.shp")
 
     wbt.fill_depressions(dem_clean_tif, dem_filled)
     wbt.d8_pointer(dem_filled, flowdir)
     wbt.d8_flow_accumulation(dem_filled, flowacc)
     wbt.extract_streams(flowacc, streams, threshold=80_000)  # TODO: make threshold a parameter or auto-determine based on area_factor and pipe sizes 
-    wbt.raster_streams_to_vector(streams, flowdir, poly_stream)
+    wbt.raster_streams_to_vector(streams, flowdir, streams_vector)
 
-    return dem_filled, flowdir, flowacc, streams, poly_stream
+    return dem_filled, flowdir, flowacc, streams, streams_vector
 
 
 
@@ -319,7 +326,8 @@ def add_equal_area_slope(line_layer_path: str, dem_path: str, csv_filepath: str)
 
 def delineate_for_pour_points(context, feedback, folders, pour_points_path: str,
                               dem_filled_path: str, flowdir_path: str, flowacc_path: str, snap_dist: float):
-    wbt = WhiteboxTools()
+    wbt = setup_whitebox()
+    wbt.exe_path = os.path.join(os.path.dirname(__file__), "whitebox_tools_noconsole.vbs")
     wbt.set_verbose_mode(True)
 
     snapped_pp = os.path.join(folders['pour_points'], "snapped_pour_points.shp")
