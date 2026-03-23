@@ -379,7 +379,7 @@ class CulvertDesignerAlgorithm(QgsProcessingAlgorithm):
 
         pour_points_path = extract_pour_points(context, feedback, folders, culvert_network_empty)
 
-        processed_ids, catchment_filepaths, flowpath_filepaths = delineate_for_pour_points(context, feedback, folders, pour_points_path, dem_filled, flowdir, flowacc, snap_dist)
+        processed_ids, catchment_filepaths, flowpath_filepaths, _ = delineate_for_pour_points(context, feedback, folders, pour_points_path, dem_filled, flowdir, flowacc, snap_dist)
         log_timer("Catchments and streams generated")
 
         if feedback.isCanceled():

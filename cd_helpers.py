@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 # cd_helpers.py
+import subprocess
 import os, io, sys, math, shutil, csv, inspect
 from pathlib import Path
 from dataclasses import dataclass
@@ -14,10 +15,8 @@ from qgis.core import (
 )
 import processing
 
-# External libs used in your original code
 from whitebox import WhiteboxTools
-# import rasterio
-# import numpy as np
+
 
 
 # ----------------------------
@@ -46,7 +45,7 @@ def initialise_folders(base_folder: str) -> dict:
         "stream_paths": os.path.join(base_folder, "Whitebox", "StreamPaths"),
         # "pcraster": os.path.join(base_folder, "PCRaster"),
         "qgis": os.path.join(base_folder, "QGISIntermediates"),
-        "lddcreate": os.path.join(base_folder, "Whitebox", "flowdirection"),
+        # "lddcreate": os.path.join(base_folder, "Whitebox", "flowdirection"),
         "streams": os.path.join(base_folder, "Whitebox", "StreamsNetwork"),
         "culvert": os.path.join(base_folder, "CulvertNetwork")
     }
@@ -102,7 +101,16 @@ def prepare_inputs(context, feedback, folders: dict, dem_layer, road_layer=None)
 
     return dem_layer, road_layer, dem_clean_tif
 
+def setup_whitebox():
+    wbt = WhiteboxTools()
+    # Override the executable with a wrapper to hide pop ups
+    # wbt.exe_path = os.path.join(os.path.dirname(__file__), "whitebox_tools.exe")
+    runner = os.path.join(os.path.dirname(__file__), "whitebox_runner.py")
+    wbt.exe_path = runner
+    wbt.set_verbose_mode(True)
+    wbt.set_default_callback(lambda x: None)
 
+    return wbt
 
 # ============================================================
 # WHITEBOX HYDROLOGY
@@ -113,43 +121,25 @@ def whitebox_flow_preparation(dem_clean_tif: str, folders: dict):
     - fill depressions
     - D8 pointer
     - D8 flow accumulation
-    - Strahler order
+    - Stream raster
+    - Polygonize stream raster
     """
-    # dem_clean_tif = os.path.join(folders['whitebox'], "cleaned_dem.tif")
-    # processing.run('gdal:translate',
-    #                {'COPY_SUBDATASETS': False, 'DATA_TYPE': 0, 'EXTRA': '', 'INPUT': dem_layer,
-    #                 'NODATA': -9999, 'OPTIONS': None, 'TARGET_CRS': dem_layer.crs(), 'OUTPUT': dem_clean_tif},
-    #                context=context, feedback=feedback, is_child_algorithm=True)
     
-    wbt = WhiteboxTools()
-    wbt.set_verbose_mode(True)
+    wbt = setup_whitebox()
 
     dem_filled = os.path.join(folders["whitebox"], "wbt_filled_dem.tif")
     flowdir = os.path.join(folders["whitebox"], "wbt_flow_dir.tif")
     flowacc = os.path.join(folders["whitebox"], "wbt_flow_acc.tif")
     streams = os.path.join(folders["whitebox"], "wbt_streams.tif")
+    streams_vector = os.path.join(folders["whitebox"], "wbt_streams_vector.shp")
 
     wbt.fill_depressions(dem_clean_tif, dem_filled)
     wbt.d8_pointer(dem_filled, flowdir)
     wbt.d8_flow_accumulation(dem_filled, flowacc)
-    wbt.extract_streams(flowacc, streams, threshold=50_000)  # TODO: make threshold a parameter or auto-determine based on area_factor and pipe sizes 
+    wbt.extract_streams(flowacc, streams, threshold=80_000)  # TODO: make threshold a parameter or auto-determine based on area_factor and pipe sizes 
+    wbt.raster_streams_to_vector(streams, flowdir, streams_vector)
 
-    # # Determine maximum Strahler order
-    # with rasterio.open(streams) as src:
-    #     arr = src.read(1)
-    #     max_order = int(np.nanmax(arr))
-
-    # # Create per-order threshold rasters
-    # for n in range(1, max_order + 1):
-    #     out_bin = os.path.join(folders["streams"], f"stream{n}.tif")
-    #     # values >= n become 1, else 0
-    #     wbt.reclass(
-    #         i=streams,
-    #         output=out_bin,
-    #         reclass_vals=f"{n}-99999;1;0"
-    #     )
-
-    return dem_filled, flowdir, flowacc, streams
+    return dem_filled, flowdir, flowacc, streams, streams_vector
 
 
 
@@ -157,64 +147,14 @@ def whitebox_flow_preparation(dem_clean_tif: str, folders: dict):
 # ----------------------------
 # Intersections & culvert scaffolding
 # ----------------------------
-def find_road_intersections(context, feedback, folders, stream_map_path: str, road_layer):
-    # polygonize stream raster
-    poly_stream = os.path.join(folders['qgis'], 'Polygonized_StreamPath.shp')
-    processing.run('gdal:polygonize',
-                   {'BAND': 1, 'EIGHT_CONNECTEDNESS': False, 'EXTRA': None, 'FIELD': 'DN',
-                    'INPUT': stream_map_path, 'OUTPUT': poly_stream},
-                   context=context, feedback=feedback, is_child_algorithm=True)
 
-    
-    # processing.run("native:polygonize",
-    #     {
-    #         "INPUT": stream_raster,
-    #         "BAND": 1,
-    #         "FIELD": "DN",
-    #         "EIGHT_CONNECTEDNESS": False,
-    #         "OUTPUT": poly_stream
-    #     },
-    #     context=context,
-    #     feedback=feedback,
-    #     is_child_algorithm=True
-    #     )
+def find_road_intersections(context, feedback, folders,stream_vector, road_layer):
+    intersections = os.path.join(folders['qgis'], 'intersections.shp')
+    processing.run('native:lineintersections', 
+                   {'INPUT': road_layer, 'INTERSECT': stream_vector, 'OUTPUT': intersections},
+                    context=context, feedback=feedback, is_child_algorithm=True)
 
-
-    # intersection
-    inter_lines = os.path.join(folders['qgis'], 'intersections_line.shp')
-    processing.run('native:intersection',
-                   {'GRID_SIZE': None, 'INPUT': road_layer, 'INPUT_FIELDS': [''],
-                    'OVERLAY': poly_stream, 'OVERLAY_FIELDS': [''],
-                    'OVERLAY_FIELDS_PREFIX': None, 'OUTPUT': inter_lines},
-                   context=context, feedback=feedback, is_child_algorithm=True)
-
-    # convert line→point (centroids)
-    inter_points = os.path.join(folders['qgis'], 'intersections_point.shp')
-    processing.run('native:centroids',
-                   {'ALL_PARTS': False, 'INPUT': inter_lines, 'OUTPUT': inter_points},
-                   context=context, feedback=feedback, is_child_algorithm=True)
-
-    # merge duplicates by buffering, dissolving, centroid
-    buf = processing.run('native:buffer',
-                         {'DISSOLVE': False, 'DISTANCE': 1, 'END_CAP_STYLE': 2,
-                          'INPUT': inter_points, 'JOIN_STYLE': 0, 'MITER_LIMIT': 2,
-                          'SEGMENTS': 5, 'SEPARATE_DISJOINT': False,
-                          'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT},
-                         context=context, feedback=feedback, is_child_algorithm=True)['OUTPUT']
-    dis = processing.run('native:dissolve',
-                         {'FIELD': [''], 'INPUT': buf, 'SEPARATE_DISJOINT': True,
-                          'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT},
-                         context=context, feedback=feedback, is_child_algorithm=True)['OUTPUT']
-    cen = processing.run('native:centroids',
-                         {'ALL_PARTS': True, 'INPUT': dis, 'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT},
-                         context=context, feedback=feedback, is_child_algorithm=True)['OUTPUT']
-
-    merged_points = os.path.join(folders['qgis'], 'inlets_and_outlets.shp')
-    processing.run('native:deleteduplicategeometries',
-                   {'INPUT': cen, 'OUTPUT': merged_points},
-                   context=context, feedback=feedback, is_child_algorithm=True)
-
-    return merged_points
+    return intersections
 
 def create_culvert_network(context, feedback, folders, dem_layer, road_intersections_path: str, road_width_m: float):
     # group inlets/outlets within approx road width
@@ -335,7 +275,8 @@ def add_equal_area_slope(line_layer_path: str, dem_path: str, csv_filepath: str)
 
 def delineate_for_pour_points(context, feedback, folders, pour_points_path: str,
                               dem_filled_path: str, flowdir_path: str, flowacc_path: str, snap_dist: float):
-    wbt = WhiteboxTools()
+    wbt = setup_whitebox()
+    wbt.exe_path = os.path.join(os.path.dirname(__file__), "whitebox_tools_noconsole.vbs")
     wbt.set_verbose_mode(True)
 
     snapped_pp = os.path.join(folders['pour_points'], "snapped_pour_points.shp")
@@ -379,7 +320,7 @@ def delineate_for_pour_points(context, feedback, folders, pour_points_path: str,
         catchment_paths.append(ws_shp)
         flowpath_paths.append(flow_shp)
 
-    return processed_ids, catchment_paths, flowpath_paths
+    return processed_ids, catchment_paths, flowpath_paths, snapped_pp
 
 # ----------------------------
 # Hydrology: flow rates
