@@ -39,6 +39,13 @@ class Step4_SizeCulverts(BaseAlgo):
         do_add = bool(self.parameterAsBool(parameters, self.P_ADD, context))
         mf = read_manifest(base)
 
+        ids = mf.get("processed_ids")
+        cats = mf.get("catchments")
+        flows = mf.get("flowpaths")
+        if not (ids and cats and flows):
+            raise Exception("Catchments/flowpaths not found. Run Step 1 with pour points (or Step 2 then Step 1) first.")
+
+
         flow_json = mf.get("flow_by_id")
         if not flow_json or not os.path.exists(flow_json):
             raise Exception("flow_by_id.json not found. Run Step 3 first.")

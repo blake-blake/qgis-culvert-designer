@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 # cd_helpers.py
+import gc
 import subprocess
 import os, io, sys, math, shutil, csv, inspect
 from pathlib import Path
@@ -10,8 +11,8 @@ from qgis.PyQt.QtCore import QVariant
 from qgis.PyQt.QtGui import QIcon
 from qgis.core import (
     QgsProcessing, QgsVectorLayer, QgsRasterLayer, QgsField, QgsGeometry,
-    QgsCoordinateReferenceSystem, QgsCoordinateTransform, QgsProject,
-    QgsProcessingException
+    QgsCoordinateReferenceSystem, QgsCoordinateTransform, QgsProject, QgsApplication,
+    QgsProcessingException, QgsProviderRegistry
 )
 import processing
 
@@ -56,6 +57,57 @@ def initialise_folders(base_folder: str) -> dict:
 # ----------------------------
 # I/O preparations
 # ----------------------------
+
+# def fully_unlock(path):
+#     project = QgsProject.instance()
+
+#     # Remove from project
+#     for lyr_id, lyr in list(project.mapLayers().items()):
+#         try:
+#             if hasattr(lyr, "source") and lyr.source() == path:
+#                 project.removeMapLayer(lyr_id)
+#         except:
+#             pass
+
+#     # Python & provider references
+#     try:
+#         lyr = None
+#         # pr = None
+#     except:
+#         pass
+
+#     # Flush GDAL/QGIS internal caches
+#     QgsApplication.processEvents()
+#     gc.collect()
+
+#     # Hard reset of providers
+#     try:
+#         QgsProviderRegistry.instance().cleanup()
+#     except:
+#         pass
+
+#     gc.collect()
+
+
+
+
+def get_unique_path(base_path):
+    """
+    If base_path exists, append _001, _002, etc. until a free name is found.
+    Returns the non-existing path.
+    """
+    if not os.path.exists(base_path):
+        return base_path
+
+    root, ext = os.path.splitext(base_path)
+    i = 1
+    while True:
+        new_path = f"{root}_{i:03d}{ext}"
+        if not os.path.exists(new_path):
+            return new_path
+        i += 1
+
+
 def prepare_inputs(context, feedback, folders: dict, dem_layer, road_layer=None):
     """
     - Validates DEM, names it 'DEM' (for raster_value expressions),
@@ -103,10 +155,10 @@ def prepare_inputs(context, feedback, folders: dict, dem_layer, road_layer=None)
 
 def setup_whitebox():
     wbt = WhiteboxTools()
-    # Override the executable with a wrapper to hide pop ups
+    # Override the executable with a wrapper in an attempt to hide pop ups
     # wbt.exe_path = os.path.join(os.path.dirname(__file__), "whitebox_tools.exe")
-    runner = os.path.join(os.path.dirname(__file__), "whitebox_runner.py")
-    wbt.exe_path = runner
+    # runner = os.path.join(os.path.dirname(__file__), "whitebox_runner.py")
+    # wbt.exe_path = runner
     wbt.set_verbose_mode(True)
     wbt.set_default_callback(lambda x: None)
 
@@ -134,6 +186,7 @@ def whitebox_flow_preparation(dem_clean_tif: str, folders: dict):
     streams_vector = os.path.join(folders["whitebox"], "wbt_streams_vector.shp")
 
     wbt.fill_depressions(dem_clean_tif, dem_filled)
+    print("Filled DEM created")
     wbt.d8_pointer(dem_filled, flowdir)
     wbt.d8_flow_accumulation(dem_filled, flowacc)
     wbt.extract_streams(flowacc, streams, threshold=80_000)  # TODO: make threshold a parameter or auto-determine based on area_factor and pipe sizes 
@@ -188,16 +241,20 @@ def create_culvert_network(context, feedback, folders, dem_layer, road_intersect
 
     # ensure downstream direction (use DEM raster_value) – DEM must be in project to evaluate, add temporarily
     QgsProject.instance().addMapLayer(dem_layer)
+    geomfix_path = os.path.join(folders['qgis'], "geomfix_tmp.shp")
     geomfix = processing.run('native:geometrybyexpression',
                              {'EXPRESSION': "if(raster_value('DEM',1,start_point($geometry))"
                                             "<raster_value('DEM',1,end_point($geometry)), "
                                             "reverse($geometry),$geometry)",
                               'INPUT': p2p, 'OUTPUT_GEOMETRY': 1, 'WITH_M': False, 'WITH_Z': True,
-                              'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT},
+                            #   'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT},
+                            'OUTPUT': geomfix_path},
                              context=context, feedback=feedback, is_child_algorithm=True)['OUTPUT']
 
     # refactor to TUFLOW-like schema
-    out_path = os.path.join(folders['culvert'], '1d_nwk.shp')
+    base_out_path = os.path.join(folders['culvert'], '1d_nwk.shp')
+    out_path = get_unique_path(base_out_path)  # ensure we don't overwrite existing network
+
     processing.run('native:refactorfields',
                    {'FIELDS_MAPPING': [
                        {'alias': '', 'comment': '', 'expression': 'GEN_ID', 'length': 36, 'name': 'ID', 'precision': 0, 'sub_type': 0, 'type': 10, 'type_name': 'text'},
@@ -221,9 +278,13 @@ def create_culvert_network(context, feedback, folders, dem_layer, road_intersect
                        {'alias': '', 'comment': '', 'expression': '0.5', 'length': 15, 'name': 'EntryC_or_', 'precision': 5, 'sub_type': 0, 'type': 6, 'type_name': 'double precision'},
                        {'alias': '', 'comment': '', 'expression': '1.0', 'length': 15, 'name': 'ExitC_or_W', 'precision': 5, 'sub_type': 0, 'type': 6, 'type_name': 'double precision'}
                    ],
-                       'INPUT': geomfix,
+                       'INPUT': geomfix_path,
                        'OUTPUT': out_path},
                    context=context, feedback=feedback, is_child_algorithm=True)
+    
+    # Remove DEM layer from project if it was added for raster_value evaluation
+    # project = QgsProject.instance()
+    # project.removeMapLayer(dem_layer.id())
     return out_path
 
 def extract_pour_points(context, feedback, folders, culvert_network_layer_or_path):
@@ -232,7 +293,9 @@ def extract_pour_points(context, feedback, folders, culvert_network_layer_or_pat
     else:
         v = culvert_network_layer_or_path
 
-    out_pp = os.path.join(folders['pour_points'], 'pour_points.shp')
+    base_pp = os.path.join(folders['pour_points'], 'pour_points.shp')
+    out_pp = get_unique_path(base_pp)  # ensure we don't overwrite existing pour points
+
     processing.run('native:extractspecificvertices',
                    {'INPUT': v, 'VERTICES': '0', 'OUTPUT': out_pp},
                    context=context, feedback=feedback, is_child_algorithm=True)
@@ -276,8 +339,6 @@ def add_equal_area_slope(line_layer_path: str, dem_path: str, csv_filepath: str)
 def delineate_for_pour_points(context, feedback, folders, pour_points_path: str,
                               dem_filled_path: str, flowdir_path: str, flowacc_path: str, snap_dist: float):
     wbt = setup_whitebox()
-    wbt.exe_path = os.path.join(os.path.dirname(__file__), "whitebox_tools_noconsole.vbs")
-    wbt.set_verbose_mode(True)
 
     snapped_pp = os.path.join(folders['pour_points'], "snapped_pour_points.shp")
     wbt.snap_pour_points(pour_points_path, flowacc_path, snapped_pp, snap_dist)
