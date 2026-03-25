@@ -320,7 +320,7 @@ class EA_Slope:
                 feat['EAS'] = eas
                 mem_layer.updateFeature(feat)
 
-        QgsProject.instance().addMapLayer(mem_layer)
+        # QgsProject.instance().addMapLayer(mem_layer) # uncommented to prevent the output layer to the project
 
         if not filename:
             print('No CSV output')
