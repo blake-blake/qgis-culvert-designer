@@ -296,8 +296,16 @@ def extract_pour_points(context, feedback, folders, culvert_network_layer_or_pat
     base_pp = os.path.join(folders['pour_points'], 'pour_points.shp')
     out_pp = get_unique_path(base_pp)  # ensure we don't overwrite existing pour points
 
+    cleaned = processing.run('native:removenullgeometries', 
+                                 {'INPUT': v, 
+                                  'REMOVE_EMPTY': True, 
+                                  'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+                                  },
+                                  context=context, feedback=feedback, is_child_algorithm=True)['OUTPUT']
+
+
     processing.run('native:extractspecificvertices',
-                   {'INPUT': v, 'VERTICES': '0', 'OUTPUT': out_pp},
+                   {'INPUT': cleaned, 'VERTICES': '0', 'OUTPUT': out_pp},
                    context=context, feedback=feedback, is_child_algorithm=True)
     return out_pp
 
