@@ -40,7 +40,7 @@ class Step1_Hydro(BaseAlgo):
         folders = initialise_folders(base)
         _, _, dem_clean_tif = prepare_inputs(context, feedback, folders, dem, None)
         
-        dem_filled, flowdir, flowacc, snapped_pp, streams_vector = whitebox_flow_preparation(dem_clean_tif, folders)
+        dem_filled, flowdir, flowacc, streams_raster, streams_vector = whitebox_flow_preparation(dem_clean_tif, folders)
 
         produced = {
             "base_folder": base,
@@ -48,7 +48,7 @@ class Step1_Hydro(BaseAlgo):
             "filled_dem": dem_filled, 
             "flow_dir": flowdir, 
             "flow_acc": flowacc,
-            "snapped_pour_points": snapped_pp,
+            "streams_raster": streams_raster,
             "streams_vector": streams_vector
         }
 

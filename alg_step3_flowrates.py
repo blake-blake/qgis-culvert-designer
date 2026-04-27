@@ -78,6 +78,16 @@ class Step3_FlowRates(BaseAlgo):
         # Save pour points to file for whitebox (ensure it has an 'ID' field)
         # If not, create a temp autoincrement ID
         src_layer = QgsVectorLayer(pour_points_path, "pour_points", "ogr")
+
+        # strip null geometries before snapping, as whitebox will error on these
+        cleaned = processing.run('native:removenullgeometries', 
+                                 {'INPUT': src_layer, 
+                                  'REMOVE_EMPTY': True, 
+                                  'OUTPUT': QgsProcessing.TEMPORARY_OUTPUT
+                                  },
+                                  context=context, feedback=feedback, is_child_algorithm=True)['OUTPUT']
+        src_layer = QgsVectorLayer(cleaned, "pour_points", "ogr")
+
         if src_layer.fields().indexOf('ID') == -1:
             saved = processing.run('native:addautoincrementalfield',
                                     {'FIELD_NAME':'ID','GROUP_FIELDS':[''],'INPUT':src_layer,'MODULUS':0,

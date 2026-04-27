@@ -338,10 +338,21 @@ def add_equal_area_slope(line_layer_path: str, dem_path: str, csv_filepath: str)
 
 def delineate_for_pour_points(context, feedback, folders, pour_points_path: str,
                               dem_filled_path: str, flowdir_path: str, flowacc_path: str, snap_dist: float):
+    if snap_dist <= 0:
+        raise ValueError('Snap distance must be greater than 0')
+    
+    
     wbt = setup_whitebox()
+    wbt.set_verbose_mode(True)
+    wbt.set_default_callback(lambda x: feedback.pushInfo(x) if feedback else None) #pushes whitebox logs to QGIS feedback panel
 
     snapped_pp = os.path.join(folders['pour_points'], "snapped_pour_points.shp")
-    wbt.snap_pour_points(pour_points_path, flowacc_path, snapped_pp, snap_dist)
+    ret = wbt.snap_pour_points(pour_points_path, flowacc_path, snapped_pp, snap_dist)
+    if ret != 0 or not os.path.exists(snapped_pp):
+        raise RuntimeError(f"Whitebox snap_pour_points failed with code {ret}. "
+                           "Check: snap distance > 0, pour points CRS matches DEM"
+        )
+
 
     # split vector by 'ID' → individual pour points
     processing.run('native:splitvectorlayer',
