@@ -7,7 +7,7 @@
 
 ## Algorithm overview
 
-- **Automatic Catchment Delineation and stream extraction** utilising PCRaster and WhiteboxTools  
+- **Automatic Catchment Delineation and stream extraction** utilising WhiteboxTools  
 - **Longest Flow Path & Equal-Area Slope Calculation**  
 - **Rainfall run-off estimation** using Flavells RFFP2000  
 - **Culvert Sizing** utilising FHWA HDS-5 based equations
@@ -32,12 +32,12 @@ Use `python -m pip install whitebox` on OSGeo4W Shell
 
 ## Installation
 
-### Step 1: Clone the Repository
+### Step 1: Clone the Repository, or download folder directory as a zip
 ```bash
 git clone https://github.com/blake-blake/qgis-culvert-designer.git
 ```
 
-### Step 2: Move the folder to the QGIS Plugin directroy
+### Step 2: Move the folder to the QGIS Plugin directroy, or install as a zip from Plugin Manager
 From within QGIS: Settings → User profiles → Open active profile folder
 
 From there, navigate to python → plugins

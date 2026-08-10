@@ -44,7 +44,7 @@ from pathlib import Path
 from qgis.PyQt.QtGui import QIcon
 from qgis.utils import iface
 # from pcraster import *
-import pcraster as pcr
+# import pcraster as pcr
 import processing
 from whitebox import WhiteboxTools
 
