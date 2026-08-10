@@ -458,9 +458,76 @@ def compute_flow_rates(feedback, processed_ids: List[int], catchment_filepaths: 
     return flow_by_id
 
 # ----------------------------
-# Hydraulics: HDS-5 sizing
+# Hydraulics: HDS-5 sizing using formula
 # ----------------------------
 def size_culverts_HDS5(feedback, processed_ids: List[int], culvert_network_layer: QgsVectorLayer,
+                       flow_by_id: Dict[int, float], pipe_diameters: Tuple[float, ...],
+                       headwater_limit: float, mannings_n: float) -> QgsVectorLayer:
+    if not culvert_network_layer.isEditable():
+        culvert_network_layer.startEditing()
+
+    # inlet constants (Thin Edge Projecting, CMP) – HY-8/HDS-5
+    a, b, c, d, e, f = 0.187321, 0.56771, -0.156544, 0.0447052, -0.00343602, 8.96610e-05
+    KE, SR = 0.9, 0.5
+
+    Ku = 29.0
+    n = mannings_n
+    g = 9.81
+
+    for value in processed_ids:
+        if feedback and feedback.isCanceled(): return culvert_network_layer
+        Q = flow_by_id.get(int(value))
+        if Q is None:
+            continue
+
+        request = f"\"ID\"={value}"
+        for culv in culvert_network_layer.getFeatures(request):
+            L = culv['Len_or_ANA']
+            us_inv = culv['US_Invert']
+            ds_inv = culv['DS_Invert']
+            Ls = us_inv - ds_inv
+
+            best_ratio = -1.0
+            chosen_D = -1.0
+
+            for D in pipe_diameters:
+                if feedback and feedback.isCanceled(): return culvert_network_layer
+                B = D
+                QBD = Q / (B * (D ** 1.5))
+                Hw_ic = (a + b*QBD + c*QBD**2 + d*QBD**3 + e*QBD**4 + f*QBD**5) * D
+                # outlet control
+                A = math.pi * D**2 / 4.0
+                P = math.pi * D
+                V = Q / A
+                R = A / P
+                He = KE * V**2 / (2 * g)
+                Hf = (Ku * (n**2) * L / (R**1.33)) * (V**2) / (2*g)
+                Ho = V**2 / (2*g)
+                Hl = He + Hf + Ho
+                Tw = D
+                Hw_oc = Tw + Hl - Ls
+
+                # pick governing & within limit
+                ratio_ic = Hw_ic / D
+                ratio_oc = Hw_oc / D
+                ratio = ratio_ic if Hw_ic > Hw_oc else ratio_oc
+                if ratio < headwater_limit and ratio > best_ratio:
+                    best_ratio = ratio
+                    chosen_D = D
+
+            culv['Width_or_D'] = float(chosen_D) if chosen_D > 0 else None
+            culv['Number_of'] = int(1)  # future: multi-barrel
+            culvert_network_layer.updateFeature(culv)
+            if feedback:
+                feedback.pushInfo(f'⭕ ID {value} → D={chosen_D} m, Hw/D={best_ratio:.3f}')
+
+    culvert_network_layer.commitChanges()
+    return culvert_network_layer
+
+# ----------------------------
+# Hydraulics: Sizing using rating curves derived from multiple HY-8 runs. Coefficients are extrcted from an excel sheet.
+# ----------------------------
+def size_culverts_rating_curves(feedback, processed_ids: List[int], culvert_network_layer: QgsVectorLayer,
                        flow_by_id: Dict[int, float], pipe_diameters: Tuple[float, ...],
                        headwater_limit: float, mannings_n: float) -> QgsVectorLayer:
     if not culvert_network_layer.isEditable():

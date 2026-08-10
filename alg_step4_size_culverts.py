@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 # alg_step4_size_culverts.py
 import os, json, shutil
+import pandas as pd
 from qgis.core import (
     QgsProcessingParameterFile, QgsProcessingParameterFeatureSource,
     QgsProcessingParameterNumber, QgsProcessingParameterBoolean,
@@ -22,7 +23,7 @@ class Step4_SizeCulverts(BaseAlgo):
         d = DesignParams()
         self.addParameter(QgsProcessingParameterFile(self.P_BASE, self.tr("Base folder"),
                                                      behavior=QgsProcessingParameterFile.Folder))
-        self.addParameter(QgsProcessingParameterFeatureSource(self.P_NWK, self.tr("1d_nwk layer (optional)"),
+        self.addParameter(QgsProcessingParameterFeatureSource(self.P_NWK, self.tr("1d_nwk layer"),
                                                               [0], optional=True))  # 0 = line layer
         self.addParameter(QgsProcessingParameterNumber(self.P_HW, self.tr("Max allowable Hw/D"),
                                                        QgsProcessingParameterNumber.Double,
@@ -33,6 +34,8 @@ class Step4_SizeCulverts(BaseAlgo):
         self.addParameter(QgsProcessingParameterBoolean(self.P_ADD, self.tr("Load updated network to project?"), defaultValue=True))
 
     def processAlgorithm(self, parameters, context, feedback):
+        coeffs = pd.read_excel(os.path.join(os.path.dirname(os.path.abspath(__file__)), "resources/Rating_cruves/culvert_coefficients.xlsx"), sheet_name="coeffs", index_col=0) 
+
         base = self.parameterAsFile(parameters, self.P_BASE, context)
         hw = float(self.parameterAsDouble(parameters, self.P_HW, context))
         nval = float(self.parameterAsDouble(parameters, self.P_N, context))
@@ -77,3 +80,58 @@ class Step4_SizeCulverts(BaseAlgo):
         if do_add:
             add_to_project([sized_path])
         return {"culvert_network_sized": sized_path}
+
+    def evaluate_poly(Q, A, B, C, D):
+        return A * Q**3 + B * Q**2 + C * Q + D
+
+    def interpolate_coefficients(coeffs, diameter, slope, prefix, length = 20):
+        # Filter coefficients for the given diameter
+        table = coeffs[coeffs['Diameter'] == diameter]
+        # table = coeffs[(coeffs["Diameter"] == diameter) & (coeffs["Length"] == length)]
+
+        if table.empty:
+            raise ValueError(f"No coefficients found for diameter {diameter}")
+
+        available_slopes = sorted(table['Slope'].unique())
+
+        # if exact slope exists, return the coefficients directly
+        if slope in available_slopes:
+            row = table[table['Slope'] == slope].iloc[0]
+            A, B, C, D = row[f'{prefix}_A'], row[f'{prefix}_B'], row[f'{prefix}_C'], row[f'{prefix}_D']
+            return A, B, C, D
+
+        lower_slope = max(s for s in available_slopes if s < slope)
+        upper_slope = min(s for s in available_slopes if s > slope)
+
+        row1 = table[table['Slope'] == lower_slope].iloc[0]
+        row2 = table[table['Slope'] == upper_slope].iloc[0]
+
+        factor = (slope - lower_slope) / (upper_slope - lower_slope)
+
+        A = row1[f'{prefix}_A'] + factor * (row2[f'{prefix}_A'] - row1[f'{prefix}_A'])
+        B = row1[f'{prefix}_B'] + factor * (row2[f'{prefix}_B'] - row1[f'{prefix}_B'])
+        C = row1[f'{prefix}_C'] + factor * (row2[f'{prefix}_C'] - row1[f'{prefix}_C'])
+        D = row1[f'{prefix}_D'] + factor * (row2[f'{prefix}_D'] - row1[f'{prefix}_D'])
+
+        return A, B, C, D
+
+    def calculate_culvert(Q, diameter, slope, length, coeffs):
+
+        length = 20  # fixed length for rating curves for now
+
+        hw_coeffs = interpolate_coefficients(coeffs, diameter, slope, length, prefix="HW")
+        hwd_coeffs = interpolate_coefficients(coeffs, diameter, slope, length, prefix="HWD")
+        v_coeffs = interpolate_coefficients(coeffs, diameter, slope, length, prefix="V")
+
+        hw = evaluate_poly(Q, *hw_coeffs)
+        hwd = evaluate_poly(Q, *hwd_coeffs)
+        velocity = evaluate_poly(Q, *v_coeffs)
+        
+        return hw, hwd, velocity
+
+    def size_culvert(Q, slope, length, max_hwd, max_velocity, coeffs):
+        for diameter in sorted(coeffs['Diameter'].unique()):
+            hw, hwd, velocity = calculate_culvert(Q, diameter, slope, length, coeffs)
+            if hwd <= max_hwd and velocity <= max_velocity:
+                return {"diameter": diameter, "hw": round(hw, 3), "hwd": round(hwd, 3), "velocity": round(velocity, 3)}
+        return None
